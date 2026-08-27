@@ -16,6 +16,9 @@ import {
   formatRoomOTPDisplay,
   MAX_FILE_SIZE,
   RTC_DATA_CHANNEL_CHUNK_SIZE,
+  RTC_DATA_CHANNEL_HIGH_WATERMARK,
+  RTC_DATA_CHANNEL_LOW_WATERMARK,
+  RTC_TRANSFER_BURST_CHUNKS,
 } from '../lib/p2pEngine';
 import { QRCodeModal } from './QRCodeModal';
 import { ActivityToastContainer, ActivityToastData } from './ActivityToast';
@@ -44,12 +47,34 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([u8arr], { type: mime });
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+const BINARY_FILE_MAGIC = 0x55434631;
+const TRANSFER_TOKEN_BYTES = 8;
+const BINARY_FILE_HEADER_BYTES = 16;
+
+function createTransferToken(): string {
+  return `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`.slice(-TRANSFER_TOKEN_BYTES).toUpperCase();
+}
+
+function encodeBinaryFileChunk(token: string, index: number, payload: Uint8Array): ArrayBuffer {
+  const packet = new Uint8Array(BINARY_FILE_HEADER_BYTES + payload.byteLength);
+  const view = new DataView(packet.buffer);
+  view.setUint32(0, BINARY_FILE_MAGIC);
+  for (let offset = 0; offset < TRANSFER_TOKEN_BYTES; offset += 1) {
+    packet[4 + offset] = token.charCodeAt(offset) || 0;
   }
-  return btoa(binary);
+  view.setUint32(12, index);
+  packet.set(payload, BINARY_FILE_HEADER_BYTES);
+  return packet.buffer;
+}
+
+function decodeBinaryFileChunk(data: ArrayBuffer): { token: string; index: number; payload: Uint8Array } | null {
+  if (data.byteLength < BINARY_FILE_HEADER_BYTES) return null;
+  const bytes = new Uint8Array(data);
+  const view = new DataView(data);
+  if (view.getUint32(0) !== BINARY_FILE_MAGIC) return null;
+  let token = '';
+  for (let offset = 0; offset < TRANSFER_TOKEN_BYTES; offset += 1) token += String.fromCharCode(bytes[4 + offset]);
+  return { token, index: view.getUint32(12), payload: bytes.slice(BINARY_FILE_HEADER_BYTES) };
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -62,10 +87,35 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 async function waitForDataChannelCapacity(channel: RTCDataChannel): Promise<void> {
-  while (channel.readyState === 'open' && channel.bufferedAmount > 256 * 1024) {
-    await new Promise((resolve) => window.setTimeout(resolve, 20));
-  }
+  channel.bufferedAmountLowThreshold = RTC_DATA_CHANNEL_LOW_WATERMARK;
   if (channel.readyState !== 'open') throw new Error('Direct peer channel closed during file transfer.');
+  if (channel.bufferedAmount <= RTC_DATA_CHANNEL_HIGH_WATERMARK) return;
+  await new Promise<void>((resolve, reject) => {
+    const onLow = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('Direct peer channel closed during file transfer.'));
+    };
+    const cleanup = () => {
+      channel.removeEventListener('bufferedamountlow', onLow);
+      channel.removeEventListener('close', onClose);
+    };
+    channel.addEventListener('bufferedamountlow', onLow, { once: true });
+    channel.addEventListener('close', onClose, { once: true });
+    if (channel.bufferedAmount <= RTC_DATA_CHANNEL_LOW_WATERMARK) {
+      cleanup();
+      resolve();
+    }
+  });
+}
+
+function getAdaptiveBurstSize(channel: RTCDataChannel): number {
+  const availableWindow = Math.max(0, RTC_DATA_CHANNEL_HIGH_WATERMARK - channel.bufferedAmount);
+  const windowChunks = Math.floor(availableWindow / RTC_DATA_CHANNEL_CHUNK_SIZE);
+  return Math.max(4, Math.min(RTC_TRANSFER_BURST_CHUNKS, windowChunks || 4));
 }
 
 interface RoomViewProps {
@@ -96,8 +146,9 @@ interface IncomingFileTransfer {
   timestamp: number;
   carbonFootprintGrams: number;
   totalChunks: number;
+  transferToken: string;
   receivedBytes: number;
-  chunks: Array<string | undefined>;
+  chunks: Array<string | Uint8Array | undefined>;
   startedAt: number;
 }
 
@@ -153,7 +204,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
     ...(room.messages || []),
   ]);
   const [chatInput, setChatInput] = useState('');
-  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const shouldStickChatToBottomRef = useRef(true);
+  const previousChatMessageCountRef = useRef(chatMessages.length);
 
   // Real-time peers list
   const [peersList, setPeersList] = useState<Peer[]>(room.activePeers || []);
@@ -312,10 +365,30 @@ export const RoomView: React.FC<RoomViewProps> = ({
     });
   };
 
-  // Auto scroll chat to bottom when new messages arrive or typing status changes
+  const handleChatScroll = useCallback(() => {
+    const stream = chatScrollRef.current;
+    if (!stream) return;
+    const distanceFromBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+    shouldStickChatToBottomRef.current = distanceFromBottom <= 96;
+  }, []);
+
+  // Scroll only the bounded message stream. Calling scrollIntoView on a child
+  // can scroll the page itself, which previously pulled the upload panel into
+  // view whenever a message or typing state changed.
   useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages, typingPeersMap]);
+    const stream = chatScrollRef.current;
+    const messageCountChanged = chatMessages.length > previousChatMessageCountRef.current;
+    previousChatMessageCountRef.current = chatMessages.length;
+    if (!stream || !messageCountChanged) return;
+
+    const newestMessage = chatMessages[chatMessages.length - 1];
+    const shouldScroll = shouldStickChatToBottomRef.current || newestMessage?.senderId === localPeerId;
+    if (!shouldScroll) return;
+
+    requestAnimationFrame(() => {
+      stream.scrollTo({ top: stream.scrollHeight, behavior: 'smooth' });
+    });
+  }, [chatMessages.length, localPeerId]);
 
   const { sendSignal, sendOffer, sendAnswer, sendCandidate } = useSignaling({
     signalingUrl: 'registry',
@@ -471,6 +544,24 @@ export const RoomView: React.FC<RoomViewProps> = ({
     };
 
     peerEngine.onDataReceived = async (data) => {
+      const binaryChunk = data instanceof ArrayBuffer ? decodeBinaryFileChunk(data) : null;
+      if (binaryChunk) {
+        const incoming = incomingTransfersRef.current[binaryChunk.token];
+        if (!incoming || incoming.transferToken !== binaryChunk.token || Date.now() - incoming.startedAt > 10 * 60 * 1000) {
+          return;
+        }
+        const index = binaryChunk.index;
+        if (index < 0 || index >= incoming.totalChunks || incoming.chunks[index]) return;
+        incoming.chunks[index] = binaryChunk.payload;
+        incoming.receivedBytes += binaryChunk.payload.byteLength;
+        setTransfer((current) => current ? {
+          ...current,
+          transferredBytes: incoming.receivedBytes,
+          progressPercent: Math.min(100, Math.round((incoming.receivedBytes / incoming.size) * 100)),
+          encryptedChunksCount: incoming.chunks.filter(Boolean).length,
+        } : current);
+        return;
+      }
       if (typeof data !== 'string') return;
       try {
         const parsed = JSON.parse(data);
@@ -507,10 +598,13 @@ export const RoomView: React.FC<RoomViewProps> = ({
             addErrorToast('ERR_FILE_LIMIT', quotaResult.errorMessage || 'Incoming file exceeds the safe transfer limit.');
             return;
           }
-          incomingTransfersRef.current[file.id] = {
+          const transferToken = typeof file.transferToken === 'string' ? file.transferToken : file.id;
+          incomingTransfersRef.current[transferToken] = {
             ...file,
+            id: file.id,
             size,
             totalChunks,
+            transferToken,
             receivedBytes: 0,
             chunks: new Array(totalChunks),
             startedAt: Date.now(),
@@ -527,10 +621,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
             mode: 'BUNDLE',
             carbonEmittedGrams: file.carbonFootprintGrams || 0,
             encryptedChunksCount: 0,
-            totalChunks: file.totalChunks,
+            totalChunks,
           });
         } else if (parsed.type === 'FILE_CHUNK') {
-          const incoming = incomingTransfersRef.current[parsed.fileId];
+          const incoming = incomingTransfersRef.current[parsed.transferToken || parsed.fileId];
           if (!incoming || Date.now() - incoming.startedAt > 10 * 60 * 1000) {
             delete incomingTransfersRef.current[parsed.fileId];
             return;
@@ -548,20 +642,20 @@ export const RoomView: React.FC<RoomViewProps> = ({
             } : current);
           }
         } else if (parsed.type === 'FILE_END') {
-          const incoming = incomingTransfersRef.current[parsed.fileId];
+          const incoming = incomingTransfersRef.current[parsed.transferToken || parsed.fileId];
           if (!incoming) return;
           const complete = incoming.chunks.length === incoming.totalChunks && incoming.chunks.every(Boolean) && incoming.receivedBytes === incoming.size;
           if (!complete) {
-            delete incomingTransfersRef.current[parsed.fileId];
+            delete incomingTransfersRef.current[parsed.transferToken || parsed.fileId];
             setTransfer(null);
             addErrorToast('ERR_FILE_INCOMPLETE', 'The direct file transfer ended before all chunks arrived.');
             return;
           }
 
-          const rawBlob = new Blob(incoming.chunks.map((chunk) => base64ToBytes(chunk as string)), { type: incoming.type });
+          const rawBlob = new Blob(incoming.chunks.map((chunk) => typeof chunk === 'string' ? base64ToBytes(chunk) : chunk as Uint8Array), { type: incoming.type });
           const actualHash = await calculateSHA256(await rawBlob.arrayBuffer());
           if (actualHash !== incoming.sha256) {
-            delete incomingTransfersRef.current[parsed.fileId];
+            delete incomingTransfersRef.current[parsed.transferToken || parsed.fileId];
             setTransfer(null);
             addErrorToast('ERR_FILE_HASH', 'The received file failed integrity verification and was discarded.');
             return;
@@ -603,7 +697,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
               fileTypeLabel: incoming.fileTypeLabel,
             },
           }]);
-          delete incomingTransfersRef.current[parsed.fileId];
+          delete incomingTransfersRef.current[parsed.transferToken || parsed.fileId];
           setTransfer(null);
         } else if (parsed.type === 'BUNDLE_ITEM_SHARE' && parsed.item) {
           // Backward-compatible path for older clients; new clients always chunk.
@@ -826,6 +920,8 @@ export const RoomView: React.FC<RoomViewProps> = ({
       };
 
       const channel = peerEngineRef.current.dataChannel;
+      const transferToken = createTransferToken();
+      channel.bufferedAmountLowThreshold = RTC_DATA_CHANNEL_LOW_WATERMARK;
       const totalChunks = Math.ceil(fileBuffer.byteLength / RTC_DATA_CHANNEL_CHUNK_SIZE);
       setTransfer({
         active: true,
@@ -859,32 +955,39 @@ export const RoomView: React.FC<RoomViewProps> = ({
           timestamp: newItem.timestamp,
           carbonFootprintGrams: newItem.carbonFootprintGrams,
           totalChunks,
+          transferToken,
         },
       }));
 
-      for (let index = 0; index < totalChunks; index += 1) {
+      // AIMD-style burst control: fill a bounded send window, then wait only
+      // when SCTP reports pressure. This removes the old per-chunk timer while
+      // keeping memory bounded on fast and slow networks alike.
+      let index = 0;
+      while (index < totalChunks) {
         await waitForDataChannelCapacity(channel);
-        const start = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
-        const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileBuffer.byteLength);
-        const payload = bytesToBase64(new Uint8Array(fileBuffer.slice(start, end)));
-        channel.send(JSON.stringify({
-          type: 'FILE_CHUNK',
-          fileId: newItem.id,
-          index,
-          totalChunks,
-          payload,
-        }));
-        const transferredBytes = end;
+        const burstSize = getAdaptiveBurstSize(channel);
+        const burstEnd = Math.min(totalChunks, index + burstSize);
+        let transferredBytes = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
+        for (; index < burstEnd; index += 1) {
+          const start = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
+          const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileBuffer.byteLength);
+          channel.send(encodeBinaryFileChunk(
+            transferToken,
+            index,
+            new Uint8Array(fileBuffer.slice(start, end)),
+          ));
+          transferredBytes = end;
+        }
         setTransfer((current) => current ? {
           ...current,
           transferredBytes,
           progressPercent: Math.round((transferredBytes / fileSize) * 100),
-          encryptedChunksCount: index + 1,
+          encryptedChunksCount: index,
         } : current);
       }
 
       await waitForDataChannelCapacity(channel);
-      channel.send(JSON.stringify({ type: 'FILE_END', fileId: newItem.id, totalChunks }));
+      channel.send(JSON.stringify({ type: 'FILE_END', fileId: newItem.id, transferToken, totalChunks }));
       onAddBundleItem(newItem);
       setChatMessages((prev) => [...prev, fileChatNotice]);
       window.setTimeout(() => setTransfer(null), 900);
@@ -1005,7 +1108,11 @@ export const RoomView: React.FC<RoomViewProps> = ({
           </div>
 
           {/* Chat Message Stream */}
-          <div className="flex-1 overflow-y-auto py-4 space-y-3.5 my-2 max-h-[460px] pr-1">
+          <div
+            ref={chatScrollRef}
+            onScroll={handleChatScroll}
+            className="flex-1 overflow-y-auto py-4 space-y-3.5 my-2 max-h-[460px] pr-1 overscroll-contain"
+          >
             {chatMessages.map((msg) => {
               const isYou = msg.senderId === localPeerId;
               const isSystem = msg.type === 'system';
@@ -1208,7 +1315,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
                 </span>
               </div>
             )}
-            <div ref={chatBottomRef} />
+            <div aria-hidden="true" className="h-px" />
           </div>
 
           {/* Quick Emojis Bar */}
