@@ -6,6 +6,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
+import { createHash } from 'node:crypto';
 import { roomRegistry } from './roomRegistryClient';
 
 export interface SignalMessage {
@@ -19,6 +20,9 @@ export interface SignalMessage {
     | 'chat_ack'
     | 'typing'
     | 'reaction'
+    | 'file_start'
+    | 'file_chunk'
+    | 'file_end'
     | 'room_state'
     | 'error'
     | 'ping'
@@ -35,6 +39,7 @@ export interface RoomState {
   roomId: string;
   peers: Map<string, WebSocket | null>;
   hostPeerId: string;
+  authHash?: string | null;
   createdAt: number;
   lastActivity: number;
 }
@@ -228,7 +233,7 @@ export class SignalingServer {
       this.handleJoin(null, message);
     } else if (message.type === 'leave') {
       this.handleLeave(null, message);
-    } else if (['offer', 'answer', 'candidate', 'chat', 'chat_ack', 'typing', 'reaction'].includes(message.type)) {
+    } else if (['offer', 'answer', 'candidate', 'chat', 'chat_ack', 'typing', 'reaction', 'file_start', 'file_chunk', 'file_end'].includes(message.type)) {
       if (message.targetPeerId) {
         this.relayMessage(null, message);
       } else if (message.roomId && message.peerId) {
@@ -300,6 +305,9 @@ export class SignalingServer {
       case 'chat_ack':
       case 'typing':
       case 'reaction':
+      case 'file_start':
+      case 'file_chunk':
+      case 'file_end':
         if (message.targetPeerId) {
           this.relayMessage(ws, message);
         } else if (message.roomId) {
@@ -336,10 +344,15 @@ export class SignalingServer {
     let room = this.rooms.get(channelId);
     if (!room) {
       if (isHost) {
+        const rawAuth = message.data?.authKey || message.data?.password;
+        const authHash = typeof rawAuth === 'string' && rawAuth.trim()
+          ? createHash('sha256').update(rawAuth.trim()).digest('hex')
+          : null;
         room = {
           roomId: channelId,
           peers: new Map(),
           hostPeerId: peerId,
+          authHash,
           createdAt: Date.now(),
           lastActivity: Date.now(),
         };
@@ -352,6 +365,24 @@ export class SignalingServer {
           data: { message: `Room ${roomId} not found or expired.`, code: 404 },
           timestamp: Date.now(),
         });
+        return;
+      }
+    }
+
+    // Verify room auth if set
+    if (room.authHash) {
+      const candidateKey = message.data?.authKey || message.data?.password;
+      const candidateHash = typeof candidateKey === 'string' && candidateKey.trim()
+        ? createHash('sha256').update(candidateKey.trim()).digest('hex')
+        : null;
+      if (!candidateHash || candidateHash !== room.authHash) {
+        if (ws) {
+          this.sendToPeer(ws, peerId, channelId, {
+            type: 'error',
+            data: { message: 'Room requires valid authorization key.', code: 403 },
+            timestamp: Date.now(),
+          });
+        }
         return;
       }
     }

@@ -5,6 +5,7 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_DATABASE_URL =
   'postgresql://neondb_owner:npg_OWXEgl2ae7HC@ep-wandering-voice-bbgycfts-pooler.c-15.us-east-1.aws.neon.tech/neondb?sslmode=require';
@@ -12,7 +13,7 @@ const DEFAULT_DATABASE_URL =
 const ROOM_TTL_SECONDS = 90;
 const EVENT_TTL_SECONDS = 30;
 const MAX_EVENT_BYTES = 64 * 1024;
-const ROOM_PATTERN = /^[A-Z0-9]{6}$/;
+const ROOM_PATTERN = /^[A-Z0-9]{4,16}$/;
 const PEER_PATTERN = /^[A-Za-z0-9_-]{3,80}$/;
 const ALLOWED_SIGNAL_TYPES = new Set([
   'offer',
@@ -22,7 +23,15 @@ const ALLOWED_SIGNAL_TYPES = new Set([
   'chat_ack',
   'typing',
   'reaction',
+  'file_start',
+  'file_chunk',
+  'file_end',
 ]);
+
+function hashAuthKey(key: unknown): string | null {
+  if (typeof key !== 'string' || !key.trim()) return null;
+  return createHash('sha256').update(key.trim()).digest('hex');
+}
 
 function getSql() {
   const dbUrl =
@@ -49,6 +58,7 @@ export interface RegistryRoomState {
   roomClosed?: boolean;
   room_code?: string;
   host_peer_id?: string;
+  hasAuth?: boolean;
   created_at?: string;
   last_seen_at?: string;
   expires_at?: string;
@@ -98,16 +108,17 @@ async function cleanupExpired(sql: ReturnType<typeof neon>) {
 async function getRoomState(
   sql: ReturnType<typeof neon>,
   roomCode: string
-): Promise<(RegistryRoomState & { peers: RegistryPeer[] }) | null> {
+): Promise<(RegistryRoomState & { peers: RegistryPeer[]; auth_hash?: string | null }) | null> {
   const now = new Date().toISOString();
   const rooms = (await sql`
-    SELECT room_code, host_peer_id, created_at, last_seen_at, expires_at
+    SELECT room_code, host_peer_id, auth_hash, created_at, last_seen_at, expires_at
     FROM ultronchat_rooms
     WHERE room_code = ${roomCode} AND expires_at > ${now}::timestamptz
     LIMIT 1
   `) as Array<{
     room_code: string;
     host_peer_id: string;
+    auth_hash?: string | null;
     created_at: string;
     last_seen_at: string;
     expires_at: string;
@@ -128,6 +139,8 @@ async function getRoomState(
     active: true,
     room_code: room.room_code,
     host_peer_id: room.host_peer_id,
+    hasAuth: Boolean(room.auth_hash),
+    auth_hash: room.auth_hash,
     created_at: room.created_at,
     last_seen_at: room.last_seen_at,
     expires_at: room.expires_at,
@@ -206,10 +219,11 @@ export async function executeNeonRoomAction(
       await sql`DELETE FROM ultronchat_rooms WHERE room_code = ${roomCode} AND expires_at < ${nowIso}::timestamptz`;
       await cleanupExpired(sql);
 
+      const authHash = hashAuthKey(body.authKey || body.password);
       try {
         await sql`
-          INSERT INTO ultronchat_rooms (room_code, host_peer_id, created_at, last_seen_at, expires_at)
-          VALUES (${roomCode}, ${peerId}, ${nowIso}::timestamptz, ${nowIso}::timestamptz, ${expiresIso}::timestamptz)
+          INSERT INTO ultronchat_rooms (room_code, host_peer_id, auth_hash, created_at, last_seen_at, expires_at)
+          VALUES (${roomCode}, ${peerId}, ${authHash}, ${nowIso}::timestamptz, ${nowIso}::timestamptz, ${expiresIso}::timestamptz)
         `;
       } catch (err: any) {
         if (err.code === '23505') {
@@ -253,6 +267,19 @@ export async function executeNeonRoomAction(
         };
         notFoundErr.status = 404;
         throw notFoundErr;
+      }
+
+      if (room.auth_hash) {
+        const candidateHash = hashAuthKey(body.authKey || body.password);
+        if (!candidateHash || candidateHash !== room.auth_hash) {
+          const authErr = new Error('Room requires valid authorization key') as Error & {
+            status?: number;
+            code?: string;
+          };
+          authErr.status = 403;
+          authErr.code = 'INVALID_ROOM_AUTH';
+          throw authErr;
+        }
       }
 
       if (room.peers.some((peer) => peer.peer_id === peerId)) {

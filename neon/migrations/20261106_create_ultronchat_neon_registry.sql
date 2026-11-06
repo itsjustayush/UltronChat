@@ -4,10 +4,11 @@
 CREATE TABLE IF NOT EXISTS public.ultronchat_rooms (
   room_code text PRIMARY KEY,
   host_peer_id text NOT NULL,
+  auth_hash text DEFAULT NULL,
   created_at timestamptz NOT NULL DEFAULT timezone('utc', now()),
   last_seen_at timestamptz NOT NULL DEFAULT timezone('utc', now()),
   expires_at timestamptz NOT NULL DEFAULT (timezone('utc', now()) + interval '90 seconds'),
-  CONSTRAINT ultronchat_rooms_code_format CHECK (room_code ~ '^[A-Z0-9]{6}$'),
+  CONSTRAINT ultronchat_rooms_code_format CHECK (room_code ~ '^[A-Z0-9]{4,16}$'),
   CONSTRAINT ultronchat_rooms_host_format CHECK (char_length(host_peer_id) BETWEEN 3 AND 80)
 );
 
