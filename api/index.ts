@@ -369,6 +369,15 @@ export async function executeNeonRoomAction(
         created_at: string;
       }>;
 
+      // Consume events so they cannot be delivered again
+      if (events.length > 0) {
+        const eventIds = events.map((e) => Number(e.id));
+        await sql`
+          DELETE FROM ultronchat_room_events
+          WHERE id = ANY(${eventIds})
+        `;
+      }
+
       return {
         messages: events.map((e) => ({
           id: Number(e.id),

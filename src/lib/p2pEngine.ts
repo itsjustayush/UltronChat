@@ -37,7 +37,9 @@ export interface P2PSignalPayload {
  */
 export class WebRTCPeerEngine {
   private pc: RTCPeerConnection | null = null;
-  public dataChannel: RTCDataChannel | null = null;  // Made public for real-time transfer access
+  public dataChannel: RTCDataChannel | null = null;
+  // Made public for real-time transfer access
+  private candidateQueue: RTCIceCandidateInit[] = [];
   private roomId: string;
   private peerId: string;
 
@@ -140,23 +142,61 @@ export class WebRTCPeerEngine {
 
   public async handleOffer(offerData: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit | null> {
     if (!this.pc) return null;
-    await this.pc.setRemoteDescription(new RTCSessionDescription(offerData));
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    return answer;
+    if (this.pc.signalingState !== 'stable' && this.pc.signalingState !== 'have-remote-offer') {
+      console.warn(`[P2PEngine] Offer received in non-stable signaling state: ${this.pc.signalingState}`);
+      return null;
+    }
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription(offerData));
+      while (this.candidateQueue.length > 0) {
+        const candidate = this.candidateQueue.shift();
+        if (candidate) {
+          await this.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        }
+      }
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      return answer;
+    } catch (err: any) {
+      console.warn('[P2PEngine] Failed to handle offer:', err?.message || err);
+      return null;
+    }
   }
 
   public async handleAnswer(answerData: RTCSessionDescriptionInit) {
     if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription(answerData));
+    if (this.pc.signalingState !== 'have-local-offer') {
+      console.warn(`[P2PEngine] Ignoring remote answer in state: ${this.pc.signalingState}`);
+      return;
+    }
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription(answerData));
+      while (this.candidateQueue.length > 0) {
+        const candidate = this.candidateQueue.shift();
+        if (candidate) {
+          await this.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        }
+      }
+    } catch (err: any) {
+      console.warn('[P2PEngine] Failed to set remote answer:', err?.message || err);
+    }
   }
 
   public async addIceCandidate(candidateData: RTCIceCandidateInit) {
     if (!this.pc) return;
-    await this.pc.addIceCandidate(new RTCIceCandidate(candidateData));
+    if (!this.pc.remoteDescription) {
+      this.candidateQueue.push(candidateData);
+      return;
+    }
+    try {
+      await this.pc.addIceCandidate(new RTCIceCandidate(candidateData));
+    } catch (err: any) {
+      console.warn('[P2PEngine] Failed to add ICE candidate:', err?.message || err);
+    }
   }
 
   public close() {
+    this.candidateQueue = [];
     if (this.dataChannel) {
       this.dataChannel.close();
       this.dataChannel = null;

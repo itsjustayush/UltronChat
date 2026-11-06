@@ -440,11 +440,15 @@ export async function executeNeonRoomAction(
         throw forbiddenErr;
       }
 
+      const sinceId = Number.isSafeInteger(Number(body.sinceId)) ? Number(body.sinceId) : 0;
       const nowIso = new Date().toISOString();
       const events = (await sql`
         SELECT id, sender_peer_id, message_type, payload, created_at
         FROM ultronchat_room_events
-        WHERE room_code = ${roomCode} AND target_peer_id = ${peerId} AND expires_at > ${nowIso}::timestamptz
+        WHERE room_code = ${roomCode}
+          AND target_peer_id = ${peerId}
+          AND id > ${sinceId}
+          AND expires_at > ${nowIso}::timestamptz
         ORDER BY id ASC
         LIMIT 100
       `) as Array<{
@@ -463,6 +467,7 @@ export async function executeNeonRoomAction(
       return {
         active: true,
         messages: events.map((e) => ({
+          id: Number(e.id),
           type: e.message_type,
           peerId: e.sender_peer_id,
           data: e.payload,

@@ -66,6 +66,9 @@ export function useSignaling(options: UseSignalingOptions): UseSignalingReturn {
   const connectRef = useRef<(() => void) | null>(null);
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const registryHeartbeatTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastEventIdRef = useRef<number>(0);
+  const processedEventIdsRef = useRef<Set<number>>(new Set());
+  const isPollingRef = useRef<boolean>(false);
   const modeRef = useRef<'ws' | 'http'>('ws');
 
   /**
@@ -76,6 +79,7 @@ export function useSignaling(options: UseSignalingOptions): UseSignalingReturn {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    isPollingRef.current = false;
   }, []);
 
   const stopRegistryHeartbeat = useCallback(() => {
@@ -304,21 +308,44 @@ export function useSignaling(options: UseSignalingOptions): UseSignalingReturn {
     startRegistryHeartbeat();
 
     // Start registry event polling every 800ms so separate app instances share the same room.
-    pollTimerRef.current = setInterval(() => {
-      fetch('/api/signal/registry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'poll', roomCode: roomId, peerId, peerName }),
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data && Array.isArray(data.messages)) {
-            data.messages.forEach((msg: SignalMessage) => {
-              handleMessage({ data: JSON.stringify(msg) } as MessageEvent);
-            });
+    pollTimerRef.current = setInterval(async () => {
+      if (isPollingRef.current) return;
+      isPollingRef.current = true;
+      try {
+        const res = await fetch('/api/signal/registry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'poll',
+            roomCode: roomId,
+            peerId,
+            peerName,
+            sinceId: lastEventIdRef.current,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (data && Array.isArray(data.messages)) {
+          for (const msg of data.messages) {
+            const msgId = Number(msg.id);
+            if (Number.isFinite(msgId)) {
+              if (processedEventIdsRef.current.has(msgId)) continue;
+              processedEventIdsRef.current.add(msgId);
+              if (processedEventIdsRef.current.size > 1000) {
+                const first = processedEventIdsRef.current.values().next().value;
+                if (first !== undefined) processedEventIdsRef.current.delete(first);
+              }
+              if (msgId > lastEventIdRef.current) {
+                lastEventIdRef.current = msgId;
+              }
+            }
+            handleMessage({ data: JSON.stringify(msg) } as MessageEvent);
           }
-        })
-        .catch(() => {});
+        }
+      } catch (err) {
+        // Transient poll error
+      } finally {
+        isPollingRef.current = false;
+      }
     }, 800);
   }, [roomId, peerId, peerName, handleMessage, registryRequest, startRegistryHeartbeat, stopHttpPolling]);
 

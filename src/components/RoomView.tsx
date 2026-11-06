@@ -344,6 +344,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
   const localPeerId = session?.id || room.activePeers.find((p) => p.isYou)?.id || 'LOCAL_PEER';
   const [isRoomHost, setIsRoomHost] = useState(room.hostId === localPeerId);
   const peerEngineRef = useRef<WebRTCPeerEngine | null>(null);
+  const announcedJoinedPeersRef = useRef<Set<string>>(new Set());
 
   const bundleItemsRef = useRef<BundleItem[]>(room.bundleItems);
   useEffect(() => {
@@ -405,6 +406,14 @@ export const RoomView: React.FC<RoomViewProps> = ({
       }
       if (data.event === 'peer_joined') {
         const joinedId = data.peerId;
+        if (!joinedId || joinedId === localPeerId) return;
+
+        // Prevent duplicate join storms
+        if (announcedJoinedPeersRef.current.has(joinedId)) {
+          return;
+        }
+        announcedJoinedPeersRef.current.add(joinedId);
+
         setPeersList((prev) => {
           if (prev.some((p) => p.id === joinedId)) return prev;
           return [
@@ -422,7 +431,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
         setChatMessages((prev) => [
           ...prev,
           {
-            id: `join-${Date.now()}`,
+            id: `join-${Date.now()}-${joinedId}`,
             senderId: 'SYSTEM',
             senderName: 'ULTRONCHAT SYSTEM',
             text: `Peer ${joinedId.substring(0, 6).toUpperCase()} connected to room.`,
@@ -437,11 +446,12 @@ export const RoomView: React.FC<RoomViewProps> = ({
           });
         }
       } else if (data.event === 'peer_left') {
+        announcedJoinedPeersRef.current.delete(data.peerId);
         setPeersList((prev) => prev.filter((p) => p.id !== data.peerId));
         setChatMessages((prev) => [
           ...prev,
           {
-            id: `left-${Date.now()}`,
+            id: `left-${Date.now()}-${data.peerId}`,
             senderId: 'SYSTEM',
             senderName: 'ULTRONCHAT SYSTEM',
             text: `Peer ${data.peerId.substring(0, 6).toUpperCase()} left the room.`,
@@ -450,6 +460,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
           },
         ]);
       } else if (data.peers) {
+        data.peers.forEach((id: string) => announcedJoinedPeersRef.current.add(id));
         const remotePeers: Peer[] = data.peers.map((id: string) => ({
           id,
           name: `Peer-${id.substring(0, 4).toUpperCase()}`,
