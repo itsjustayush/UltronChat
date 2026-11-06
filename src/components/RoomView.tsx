@@ -875,11 +875,25 @@ export const RoomView: React.FC<RoomViewProps> = ({
       return;
     }
 
+    let wakeLock: any = null;
+    if ('wakeLock' in navigator) {
+      try {
+        // @ts-ignore
+        wakeLock = await navigator.wakeLock.request('screen');
+      } catch {}
+    }
+
     try {
-      const fileBuffer = await file.arrayBuffer();
-      const sha256Hex = await calculateSHA256(fileBuffer);
-      const rawBlob = new Blob([fileBuffer], { type: fileType });
-      const blobUrl = URL.createObjectURL(rawBlob);
+      const rawBlob = file;
+      const blobUrl = URL.createObjectURL(file);
+      let sha256Hex = '';
+      if (file.size <= 32 * 1024 * 1024) {
+        const fileBuffer = await file.arrayBuffer();
+        sha256Hex = await calculateSHA256(fileBuffer);
+      } else {
+        const headerSlice = await file.slice(0, 1024 * 1024).arrayBuffer();
+        sha256Hex = await calculateSHA256(headerSlice);
+      }
 
       const newItem: BundleItem = {
         id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -922,7 +936,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       const channel = peerEngineRef.current.dataChannel;
       const transferToken = createTransferToken();
       channel.bufferedAmountLowThreshold = RTC_DATA_CHANNEL_LOW_WATERMARK;
-      const totalChunks = Math.ceil(fileBuffer.byteLength / RTC_DATA_CHANNEL_CHUNK_SIZE);
+      const totalChunks = Math.ceil(fileSize / RTC_DATA_CHANNEL_CHUNK_SIZE);
       setTransfer({
         active: true,
         fileName,
@@ -970,11 +984,13 @@ export const RoomView: React.FC<RoomViewProps> = ({
         let transferredBytes = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
         for (; index < burstEnd; index += 1) {
           const start = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
-          const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileBuffer.byteLength);
+          const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileSize);
+          const chunkBlob = file.slice(start, end);
+          const chunkBuffer = await chunkBlob.arrayBuffer();
           channel.send(encodeBinaryFileChunk(
             transferToken,
             index,
-            new Uint8Array(fileBuffer.slice(start, end)),
+            new Uint8Array(chunkBuffer),
           ));
           transferredBytes = end;
         }
@@ -993,6 +1009,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
       window.setTimeout(() => setTransfer(null), 900);
     } catch (err: any) {
       addErrorToast('ERR_ENCRYPT_FAIL', err?.message || 'Failed to encrypt file.');
+    } finally {
+      if (wakeLock) {
+        try { await wakeLock.release(); } catch {}
+      }
     }
   };
 
@@ -1000,7 +1020,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
     if (!files.length) return;
     setIsProcessingFiles(true);
     try {
-      await Promise.all(files.map((file) => processSingleFile(file)));
+      for (const file of files) {
+        await processSingleFile(file);
+      }
     } finally {
       setIsProcessingFiles(false);
     }

@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
 import type { ChangeEvent, CSSProperties, FormEvent, KeyboardEvent } from 'react';
-import { ArrowRight, Check, ClipboardPaste, KeyRound, LockKeyhole, Plus, Radio, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { ArrowRight, Check, ClipboardPaste, KeyRound, LockKeyhole, Plus, Radio, Scan, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { ViewMode, UserSession } from '../types';
+import { QRScannerModal } from './QRScannerModal';
 
 interface DashboardScreenProps {
   session: UserSession;
@@ -23,6 +24,7 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
   const [editingNick, setEditingNick] = useState(false);
   const [nickVal, setNickVal] = useState(session.identifier);
   const [isJoining, setIsJoining] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
   const handleOtpChange = (index: number, event: ChangeEvent<HTMLInputElement>) => {
@@ -53,6 +55,20 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
       await onJoinRoom(code);
     } finally {
       setIsJoining(false);
+    }
+  };
+
+  const handleScannedRoom = async (code: string) => {
+    setShowScanner(false);
+    const clean = code.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6);
+    if (clean.length === 6) {
+      setOtpValues(clean.split(''));
+      setIsJoining(true);
+      try {
+        await onJoinRoom(clean);
+      } finally {
+        setIsJoining(false);
+      }
     }
   };
 
@@ -104,12 +120,15 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
         </article>
 
         <article className="stagger-reveal glass-panel group flex min-h-[360px] flex-col justify-between rounded-[2rem] p-6 sm:p-8" style={{ '--delay': '200ms' } as CSSProperties}>
-          <div><div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[.18em] text-white/40"><span>02 / Join</span><KeyRound size={18} className="text-[#d6ff62]" /></div><h2 className="mt-12 max-w-sm text-4xl font-semibold leading-[.92] tracking-[-.07em] text-white sm:text-5xl">Enter the<br /><em className="font-display font-normal not-italic text-white/45">room code.</em></h2><p className="mt-5 max-w-sm text-sm leading-6 text-white/50">Use the six-character code from your host. The code is only an invitation, not a password or a permanent identity.</p></div>
+          <div><div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[.18em] text-white/40"><span>02 / Join</span><KeyRound size={18} className="text-[#d6ff62]" /></div><h2 className="mt-12 max-w-sm text-4xl font-semibold leading-[.92] tracking-[-.07em] text-white sm:text-5xl">Enter the<br /><em className="font-display font-normal not-italic text-white/45">room code.</em></h2><p className="mt-5 max-w-sm text-sm leading-6 text-white/50">Use the six-character code from your host, or scan the host's QR code on mobile.</p></div>
           <div className="mt-8">
             <div className="flex gap-2 sm:gap-3" role="group" aria-label="Six-character room code">
               {otpValues.map((value, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} value={value} onChange={(event) => handleOtpChange(index, event)} onKeyDown={(event) => handleOtpKeyDown(index, event)} aria-label={`Room code character ${index + 1}`} inputMode="text" autoComplete="one-time-code" maxLength={1} className="h-14 min-w-0 flex-1 rounded-xl border border-white/15 bg-black/25 text-center font-mono text-xl text-white outline-none transition-all focus:border-[#d6ff62] focus:bg-[#d6ff62]/10" />)}
             </div>
-            <button onClick={handleJoin} disabled={otpValues.join('').length !== 6 || isJoining} className="liquid-button liquid-button--solid mt-4 w-full disabled:cursor-not-allowed disabled:opacity-35"><ClipboardPaste size={16} /> {isJoining ? 'Checking active room…' : 'Enter room'} {!isJoining && <ArrowRight size={16} />}</button>
+            <div className="mt-4 flex gap-2">
+              <button onClick={handleJoin} disabled={otpValues.join('').length !== 6 || isJoining} className="liquid-button liquid-button--solid flex-1 disabled:cursor-not-allowed disabled:opacity-35"><ClipboardPaste size={16} /> {isJoining ? 'Checking active room…' : 'Enter room'} {!isJoining && <ArrowRight size={16} />}</button>
+              <button type="button" onClick={() => setShowScanner(true)} className="liquid-button px-4 font-mono text-xs text-white/90 hover:text-white" title="Scan QR Code with Camera"><Scan size={16} className="text-[#d6ff62]" /> <span className="hidden sm:inline">Scan QR</span></button>
+            </div>
             {joinError && <p role="alert" className="mt-3 rounded-xl border border-[#ff8e8e]/30 bg-[#ff8e8e]/[.08] px-3 py-2.5 font-mono text-[10px] uppercase tracking-[.08em] text-[#ffb2b2]">{joinError}</p>}
           </div>
         </article>
@@ -120,6 +139,13 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
       </section>
 
       <div className="mt-8 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[.18em] text-white/30"><ShieldCheck size={14} className="text-[#d6ff62]" /> We do not retain room content. Signaling remains transient while peers are online.</div>
+
+      {showScanner && (
+        <QRScannerModal
+          onScan={handleScannedRoom}
+          onClose={() => setShowScanner(false)}
+        />
+      )}
     </div>
   );
 }

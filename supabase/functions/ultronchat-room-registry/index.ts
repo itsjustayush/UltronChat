@@ -37,7 +37,8 @@ function normalizePeerId(value: unknown): string | null {
 
 function normalizePeerName(value: unknown): string {
   if (typeof value !== 'string') return 'Guest';
-  const name = value.replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 32);
+  // Preserve unicode names while enforcing length boundary
+  const name = value.trim().slice(0, 32);
   return name || 'Guest';
 }
 
@@ -84,21 +85,35 @@ async function getRoomState(roomCode: string) {
 async function touchRoom(roomCode: string, peerId: string) {
   const now = new Date();
   const expires = new Date(now.getTime() + ROOM_TTL_SECONDS * 1000).toISOString();
+
   const { data: peer, error: peerError } = await supabase
     .from('ultronchat_room_peers')
-    .update({ last_seen_at: now.toISOString(), expires_at: expires })
+    .select('peer_id, last_seen_at')
     .eq('room_code', roomCode)
     .eq('peer_id', peerId)
     .gt('expires_at', now.toISOString())
-    .select('peer_id')
     .maybeSingle();
+
   if (peerError) throw peerError;
   if (!peer) return false;
-  const { error: roomError } = await supabase
+
+  const lastSeen = peer.last_seen_at ? new Date(peer.last_seen_at).getTime() : 0;
+  // Throttle updates to at most once per 15s to eliminate write amplification during 800ms client polling
+  if (now.getTime() - lastSeen < 15000) {
+    return true;
+  }
+
+  await supabase
+    .from('ultronchat_room_peers')
+    .update({ last_seen_at: now.toISOString(), expires_at: expires })
+    .eq('room_code', roomCode)
+    .eq('peer_id', peerId);
+
+  await supabase
     .from('ultronchat_rooms')
     .update({ last_seen_at: now.toISOString(), expires_at: expires })
     .eq('room_code', roomCode);
-  if (roomError) throw roomError;
+
   return true;
 }
 
@@ -119,9 +134,12 @@ async function createRoom(body: Record<string, unknown>) {
   const peerId = normalizePeerId(body.peerId);
   if (!roomCode || !peerId) return json({ error: 'Invalid room or peer identity' }, 400);
   const peerName = normalizePeerName(body.peerName);
-  await cleanupExpired();
 
   const now = new Date();
+  // Clear any expired room with this code immediately to prevent 409 zombie collision
+  await supabase.from('ultronchat_rooms').delete().eq('room_code', roomCode).lt('expires_at', now.toISOString());
+  await cleanupExpired();
+
   const expires = new Date(now.getTime() + ROOM_TTL_SECONDS * 1000).toISOString();
   const { error: roomError } = await supabase.from('ultronchat_rooms').insert({
     room_code: roomCode,
@@ -176,12 +194,23 @@ async function joinRoom(body: Record<string, unknown>) {
   if (peerError) throw peerError;
   await supabase.from('ultronchat_rooms').update({ last_seen_at: now.toISOString(), expires_at: expires }).eq('room_code', roomCode);
 
-  for (const peer of room.peers) {
-    await insertEvent(roomCode, peer.peer_id, peerId, 'room_state', {
-      event: 'peer_joined', peerId, peerName, hostPeerId: room.host_peer_id,
-      roomSize: room.peers.length + 1,
-    });
+  // Batch insert join notifications in 1 round-trip
+  if (room.peers.length > 0) {
+    const expiresAt = new Date(Date.now() + EVENT_TTL_SECONDS * 1000).toISOString();
+    const rows = room.peers.map((peer) => ({
+      room_code: roomCode,
+      target_peer_id: peer.peer_id,
+      sender_peer_id: peerId,
+      message_type: 'room_state',
+      payload: {
+        event: 'peer_joined', peerId, peerName, hostPeerId: room.host_peer_id,
+        roomSize: room.peers.length + 1,
+      },
+      expires_at: expiresAt,
+    }));
+    await supabase.from('ultronchat_room_events').insert(rows);
   }
+
   return json({ active: true, joined: true, ...(await getRoomState(roomCode)) });
 }
 
@@ -220,16 +249,38 @@ async function leaveRoom(body: Record<string, unknown>) {
     await supabase.from('ultronchat_room_peers').update({ is_host: true }).eq('room_code', roomCode).eq('peer_id', hostPeerId);
   }
 
-  for (const peer of remaining) {
-    await insertEvent(roomCode, peer.peer_id, peerId, 'room_state', {
+  // Batch insert leave notifications
+  const expiresAt = new Date(Date.now() + EVENT_TTL_SECONDS * 1000).toISOString();
+  const leaveEvents = remaining.map((peer) => ({
+    room_code: roomCode,
+    target_peer_id: peer.peer_id,
+    sender_peer_id: peerId,
+    message_type: 'room_state',
+    payload: {
       event: 'peer_left', peerId, hostPeerId, roomSize: remaining.length,
-    });
-    if (hostPeerId !== room.host_peer_id) {
-      await insertEvent(roomCode, peer.peer_id, peerId, 'room_state', {
-        event: 'host_changed', hostPeerId, roomSize: remaining.length,
+    },
+    expires_at: expiresAt,
+  }));
+
+  if (hostPeerId !== room.host_peer_id) {
+    remaining.forEach((peer) => {
+      leaveEvents.push({
+        room_code: roomCode,
+        target_peer_id: peer.peer_id,
+        sender_peer_id: peerId,
+        message_type: 'room_state',
+        payload: {
+          event: 'host_changed', hostPeerId, roomSize: remaining.length,
+        },
+        expires_at: expiresAt,
       });
-    }
+    });
   }
+
+  if (leaveEvents.length > 0) {
+    await supabase.from('ultronchat_room_events').insert(leaveEvents);
+  }
+
   return json({ active: true, left: true, ...(await getRoomState(roomCode)) });
 }
 
@@ -248,14 +299,21 @@ async function pollEvents(body: Record<string, unknown>) {
     .gt('expires_at', new Date().toISOString())
     .order('id', { ascending: true })
     .limit(100);
+
   if (error) throw error;
-  if (events?.length) await supabase.from('ultronchat_room_events').delete().in('id', events.map((event) => event.id));
-  return json({ active: true, messages: (events ?? []).map((event) => ({
-    type: event.message_type,
-    peerId: event.sender_peer_id,
-    data: event.payload,
-    timestamp: new Date(event.created_at).getTime(),
-  })) });
+  if (events?.length) {
+    await supabase.from('ultronchat_room_events').delete().in('id', events.map((event) => event.id));
+  }
+
+  return json({
+    active: true,
+    messages: (events ?? []).map((event) => ({
+      type: event.message_type,
+      peerId: event.sender_peer_id,
+      data: event.payload,
+      timestamp: new Date(event.created_at).getTime(),
+    })),
+  });
 }
 
 async function signal(body: Record<string, unknown>) {
@@ -269,7 +327,22 @@ async function signal(body: Record<string, unknown>) {
   if (!room || !room.peers.some((peer) => peer.peer_id === peerId)) return json({ error: 'Peer is not joined to this room' }, 403);
   const targetPeerId = normalizePeerId(body.targetPeerId);
   const targets = targetPeerId ? room.peers.filter((peer) => peer.peer_id === targetPeerId) : room.peers.filter((peer) => peer.peer_id !== peerId);
-  for (const target of targets) await insertEvent(roomCode, target.peer_id, peerId, type, body.data ?? {});
+
+  // Batch insert all signaling events in a single round trip
+  if (targets.length > 0) {
+    const expiresAt = new Date(Date.now() + EVENT_TTL_SECONDS * 1000).toISOString();
+    const rows = targets.map((target) => ({
+      room_code: roomCode,
+      target_peer_id: target.peer_id,
+      sender_peer_id: peerId,
+      message_type: type,
+      payload: body.data ?? {},
+      expires_at: expiresAt,
+    }));
+    const { error } = await supabase.from('ultronchat_room_events').insert(rows);
+    if (error) throw error;
+  }
+
   return json({ ok: true, delivered: targets.length });
 }
 

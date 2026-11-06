@@ -1,0 +1,20 @@
+{
+  "name": "UltronChat — Ephemeral P2P Collaboration",
+  "short_name": "UltronChat",
+  "description": "Zero-knowledge, direct peer-to-peer file transfer and ephemeral collaboration without cloud storage.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
