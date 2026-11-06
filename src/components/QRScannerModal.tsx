@@ -117,7 +117,7 @@ export function QRScannerModal({ onScan, onClose }: QRScannerModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-md">
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-white/10 bg-[#0d0d0d] p-6 shadow-2xl">
+      <div className="relative w-full max-w-md overflow-y-auto max-h-[92dvh] rounded-2xl sm:rounded-3xl border border-white/10 bg-[#0d0d0d] p-4 sm:p-6 shadow-2xl">
         <div className="flex items-center justify-between pb-4 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <Scan className="h-5 w-5 text-[#d6ff62]" />

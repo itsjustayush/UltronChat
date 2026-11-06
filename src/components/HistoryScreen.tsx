@@ -29,14 +29,14 @@ export function HistoryScreen({ bundleItems, onWipeSession }: HistoryScreenProps
   };
 
   return (
-    <div className="history-shell page-reveal mx-auto min-h-screen w-full max-w-[1440px] px-5 pb-20 pt-10 sm:px-8 lg:px-12 lg:pt-16">
+    <div className="history-shell page-reveal mx-auto min-h-screen min-h-[100dvh] w-full max-w-[1440px] px-3.5 pb-16 pt-6 sm:px-8 sm:pb-20 sm:pt-10 lg:px-12 lg:pt-16">
       <header className="flex flex-col justify-between gap-8 border-b border-white/10 pb-8 md:flex-row md:items-end">
         <div className="max-w-2xl">
           <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#d6ff62]/20 bg-[#d6ff62]/[.08] px-3 py-2 font-mono text-[10px] uppercase tracking-[.2em] text-[#d6ff62]"><HardDrive size={13} /> Memory / current tab</div>
-          <h1 className="text-[clamp(3rem,7vw,6.5rem)] font-semibold leading-[.88] tracking-[-.085em] text-white">Session<br /><em className="font-display font-normal not-italic text-white/45">memory.</em></h1>
+          <h1 className="text-[clamp(2.35rem,7vw,6.5rem)] font-semibold leading-[.92] sm:leading-[.88] tracking-[-.075em] text-white break-words">Session<br /><em className="font-display font-normal not-italic text-white/45">memory.</em></h1>
           <p className="mt-6 max-w-xl text-base leading-7 text-white/50">A local view of files received or shared in this tab. This is not a cloud archive; wiping the session removes the in-memory registry and its downloadable blobs.</p>
         </div>
-        <button onClick={onWipeSession} className="liquid-button self-start border-[#ff8e8e]/40 bg-[#ff8e8e]/[.08] text-[#ffb2b2] hover:border-[#ff8e8e]/75 hover:bg-[#ff8e8e]/[.14] md:self-end"><Trash2 size={16} /> Wipe session memory</button>
+        <button onClick={onWipeSession} className="liquid-button self-stretch sm:self-start md:self-end border-[#ff8e8e]/40 bg-[#ff8e8e]/[.08] text-[#ffb2b2] hover:border-[#ff8e8e]/75 hover:bg-[#ff8e8e]/[.14]"><Trash2 size={16} /> Wipe session memory</button>
       </header>
 
       <section className="mt-8 grid gap-4 sm:grid-cols-3">

@@ -80,13 +80,13 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
   };
 
   return (
-    <div className="page-reveal mx-auto w-full max-w-[1440px] px-5 pb-16 pt-10 sm:px-8 lg:px-12 lg:pt-16">
+    <div className="page-reveal mx-auto w-full max-w-[1440px] px-3.5 pb-12 pt-6 sm:px-8 sm:pb-16 sm:pt-10 lg:px-12 lg:pt-16">
       <section className="grid gap-10 lg:grid-cols-[1.15fr_.85fr] lg:items-end lg:gap-16">
         <div className="max-w-3xl">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#d6ff62]/20 bg-[#d6ff62]/[.08] px-3 py-2 font-mono text-[10px] uppercase tracking-[.2em] text-[#d6ff62]">
             <Sparkles size={13} /> Private realtime rooms
           </div>
-          <h1 className="text-[clamp(3.25rem,8vw,7.8rem)] font-semibold leading-[.88] tracking-[-.085em] text-white">Move work<br /><em className="font-display font-normal not-italic text-white/45">without a trace.</em></h1>
+          <h1 className="text-[clamp(2.35rem,7.5vw,7.8rem)] font-semibold leading-[.92] sm:leading-[.88] tracking-[-.075em] text-white break-words">Move work<br /><em className="font-display font-normal not-italic text-white/45">without a trace.</em></h1>
           <p className="mt-7 max-w-xl text-base leading-7 text-white/55 sm:text-lg">UltronChat gives teams a temporary place to talk and move files together. No profile graph, no archive, no friction between a room and the people in it.</p>
           <div className="mt-8 flex flex-wrap items-center gap-4 font-mono text-[10px] uppercase tracking-[.16em] text-white/45">
             <span className="inline-flex items-center gap-2"><Radio size={14} className="text-[#d6ff62]" /> Live transport</span>
@@ -122,8 +122,8 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
         <article className="stagger-reveal glass-panel group flex min-h-[360px] flex-col justify-between rounded-[2rem] p-6 sm:p-8" style={{ '--delay': '200ms' } as CSSProperties}>
           <div><div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[.18em] text-white/40"><span>02 / Join</span><KeyRound size={18} className="text-[#d6ff62]" /></div><h2 className="mt-12 max-w-sm text-4xl font-semibold leading-[.92] tracking-[-.07em] text-white sm:text-5xl">Enter the<br /><em className="font-display font-normal not-italic text-white/45">room code.</em></h2><p className="mt-5 max-w-sm text-sm leading-6 text-white/50">Use the six-character code from your host, or scan the host's QR code on mobile.</p></div>
           <div className="mt-8">
-            <div className="flex gap-2 sm:gap-3" role="group" aria-label="Six-character room code">
-              {otpValues.map((value, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} value={value} onChange={(event) => handleOtpChange(index, event)} onKeyDown={(event) => handleOtpKeyDown(index, event)} aria-label={`Room code character ${index + 1}`} inputMode="text" autoComplete="one-time-code" maxLength={1} className="h-14 min-w-0 flex-1 rounded-xl border border-white/15 bg-black/25 text-center font-mono text-xl text-white outline-none transition-all focus:border-[#d6ff62] focus:bg-[#d6ff62]/10" />)}
+            <div className="flex gap-1.5 sm:gap-3" role="group" aria-label="Six-character room code">
+              {otpValues.map((value, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} value={value} onChange={(event) => handleOtpChange(index, event)} onKeyDown={(event) => handleOtpKeyDown(index, event)} aria-label={`Room code character ${index + 1}`} inputMode="text" autoComplete="one-time-code" maxLength={1} className="h-11 sm:h-14 min-w-0 flex-1 rounded-xl border border-white/15 bg-black/25 text-center font-mono text-base sm:text-xl text-white outline-none transition-all focus:border-[#d6ff62] focus:bg-[#d6ff62]/10" />)}
             </div>
             <div className="mt-4 flex gap-2">
               <button onClick={handleJoin} disabled={otpValues.join('').length !== 6 || isJoining} className="liquid-button liquid-button--solid flex-1 disabled:cursor-not-allowed disabled:opacity-35"><ClipboardPaste size={16} /> {isJoining ? 'Checking active room…' : 'Enter room'} {!isJoining && <ArrowRight size={16} />}</button>

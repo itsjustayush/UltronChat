@@ -50,7 +50,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
       ></div>
 
       {/* Modal Content Container */}
-      <div className="relative w-full max-w-5xl h-full max-h-[850px] bg-black/60 backdrop-blur-2xl border border-white/10 rounded-2xl flex flex-col overflow-hidden z-10 shadow-2xl">
+      <div className="relative w-full max-w-5xl h-full max-h-[90dvh] bg-black/60 backdrop-blur-2xl border border-white/10 rounded-2xl flex flex-col overflow-hidden z-10 shadow-2xl">
         {/* Modal Header */}
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-white/10 bg-white/[0.02]">
           <div className="flex items-center gap-3 truncate pr-4">
@@ -71,7 +71,7 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
         </div>
 
         {/* Modal Body (Two-Column Layout) */}
-        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        <div className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
           {/* Main Preview Area */}
           <div className="flex-[3] relative bg-black/40 flex items-center justify-center p-6 md:p-8 overflow-hidden group">
             <div className="absolute top-4 left-4 z-10">

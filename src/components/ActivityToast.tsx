@@ -18,7 +18,7 @@ export const ActivityToastContainer: React.FC<ActivityToastProps> = ({ toasts, o
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed top-20 right-4 sm:right-6 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none transition-all duration-300">
+    <div className="fixed top-20 right-3 left-3 sm:left-auto sm:right-6 z-50 flex flex-col gap-2.5 max-w-sm w-auto sm:w-full pointer-events-none transition-all duration-300">
       {toasts.map((toast) => {
         const isJoin = toast.type === 'join';
         const isLeave = toast.type === 'leave';

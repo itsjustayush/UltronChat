@@ -127,13 +127,13 @@ export default function App() {
     <div className="app-shell">
       <div className="noise-overlay" aria-hidden="true" />
       <Navbar currentView={currentView} setView={setCurrentView} session={session} onUpdateNickname={handleUpdateNickname} latencyMs={latencyMs} />
-      <main className="relative z-10 min-h-[calc(100vh-76px)]">
+      <main className="relative z-10 min-h-[calc(100vh-76px)] min-h-[calc(100dvh-76px)]">
         {currentView === 'DASHBOARD' || currentView === 'AUTH' ? <DashboardScreen session={session} onCreateRoom={handleCreateRoom} onJoinRoom={handleJoinRoom} joinError={joinError} setView={setCurrentView} onUpdateNickname={handleUpdateNickname} /> : null}
         {currentView === 'ROOM' && <RoomView room={room} session={session} onLeaveRoom={handleLeaveRoom} onPreviewFile={setPreviewFile} onAddBundleItem={handleAddBundleItem} />}
         {currentView === 'HISTORY' && <HistoryScreen bundleItems={room.bundleItems} onWipeSession={handleWipeSession} />}
       </main>
       {previewFile && <FilePreviewModal file={previewFile} onClose={() => setPreviewFile(null)} onDownload={handleDownloadFile} />}
-      <footer className="relative z-10 mx-auto flex w-full max-w-[1440px] flex-col gap-4 border-t border-white/10 px-5 py-6 font-mono text-[10px] uppercase tracking-[.16em] text-white/35 sm:px-8 lg:px-12">
+      <footer className="relative z-10 mx-auto flex w-full max-w-[1440px] flex-col sm:flex-row sm:items-center justify-between gap-4 border-t border-white/10 px-4 py-5 font-mono text-[10px] uppercase tracking-[.16em] text-white/35 sm:px-8 lg:px-12">
         <span>UltronChat / ephemeral collaboration</span>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:justify-end">
           <span className="inline-flex items-center gap-2"><ShieldCheck size={13} className="text-[#d6ff62]" /> Built by Ayush Bhattacharya</span>

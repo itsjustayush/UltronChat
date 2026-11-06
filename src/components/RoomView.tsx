@@ -1046,14 +1046,14 @@ export const RoomView: React.FC<RoomViewProps> = ({
   };
 
   return (
-    <div className="room-shell page-reveal min-h-screen pt-16 pb-12 px-3 sm:px-8 bg-[#F2F2EE] flex flex-col">
+    <div className="room-shell page-reveal min-h-screen min-h-[100dvh] pt-3 sm:pt-6 pb-8 sm:pb-12 px-2.5 sm:px-6 lg:px-8 bg-[#F2F2EE] flex flex-col">
       {/* Top Header Bar */}
       <div className="w-full max-w-[1280px] mx-auto mt-2 mb-4">
-        <div className="bg-white/90 backdrop-blur-xl border border-[#192837]/10 rounded-2xl p-4 flex flex-wrap justify-between items-center gap-4 shadow-xs">
-          <div className="flex items-center gap-3">
+        <div className="bg-white/90 backdrop-blur-xl border border-[#192837]/10 rounded-2xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center justify-between sm:justify-start gap-2 sm:gap-3">
             <button
               onClick={onLeaveRoom}
-              className="p-2 bg-white border border-[#192837]/20 hover:bg-[#F2F2EE] text-[#192837] rounded-xl font-mono text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+              className="p-2 sm:px-3 sm:py-2 bg-white border border-[#192837]/20 hover:bg-[#F2F2EE] text-[#192837] rounded-xl font-mono text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0"
             >
               <span className="material-symbols-outlined text-base">arrow_back</span>
               Leave Room
@@ -1069,7 +1069,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center justify-between sm:justify-end gap-2 flex-wrap">
             <button
               onClick={handleCopyLink}
               className="px-3 py-1.5 bg-[#7342E2]/10 hover:bg-[#7342E2]/20 text-[#7342E2] border border-[#7342E2]/30 rounded-xl font-mono text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
@@ -1124,10 +1124,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
       </div>
 
       {/* Main Split Layout: Left Chat + Right Files/Dropzone */}
-      <div className="w-full max-w-[1280px] mx-auto flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[580px]">
+      <div className="w-full max-w-[1280px] mx-auto flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 min-h-0 lg:min-h-[580px]">
         
         {/* Left / Main Column: Real-time Ephemeral Chat (7 cols) */}
-        <div className="lg:col-span-7 bg-white/90 backdrop-blur-2xl border border-[#192837]/10 rounded-3xl p-4 sm:p-6 flex flex-col justify-between shadow-sm min-h-[500px]">
+        <div className="lg:col-span-7 bg-white/90 backdrop-blur-2xl border border-[#192837]/10 rounded-2xl sm:rounded-3xl p-3.5 sm:p-6 flex flex-col justify-between shadow-sm min-h-[420px] sm:min-h-[500px]">
           {/* Chat Header */}
           <div className="flex justify-between items-center pb-3 border-b border-[#192837]/10">
             <div className="flex items-center gap-2">
@@ -1144,7 +1144,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
           <div
             ref={chatScrollRef}
             onScroll={handleChatScroll}
-            className="flex-1 overflow-y-auto py-4 space-y-3.5 my-2 max-h-[460px] pr-1 overscroll-contain"
+            className="flex-1 overflow-y-auto py-3 space-y-3 my-2 h-[320px] sm:h-[400px] lg:h-[460px] max-h-[52dvh] pr-1 overscroll-contain custom-scrollbar"
           >
             {chatMessages.map((msg) => {
               const isYou = msg.senderId === localPeerId;
@@ -1382,7 +1382,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
               type="button"
               onClick={() => fileInputRef.current?.click()}
               title="Attach File"
-              className="p-3 bg-white border border-[#192837]/20 hover:bg-[#F2F2EE] text-[#192837] rounded-2xl flex items-center justify-center cursor-pointer transition-all"
+              className="p-2.5 sm:p-3 bg-white border border-[#192837]/20 hover:bg-[#F2F2EE] text-[#192837] rounded-xl sm:rounded-2xl flex items-center justify-center cursor-pointer transition-all shrink-0"
             >
               <span className="material-symbols-outlined text-xl">attach_file</span>
             </button>
@@ -1392,13 +1392,13 @@ export const RoomView: React.FC<RoomViewProps> = ({
               value={chatInput}
               onChange={handleChatInputChange}
               placeholder="Type your ephemeral message..."
-              className="flex-1 bg-white border border-[#192837]/20 rounded-2xl px-4 py-3 text-sm font-sans focus:outline-none focus:border-[#7342E2] focus:ring-1 focus:ring-[#7342E2] transition-all"
+              className="flex-1 min-w-0 bg-white border border-[#192837]/20 rounded-xl sm:rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm font-sans focus:outline-none focus:border-[#7342E2] focus:ring-1 focus:ring-[#7342E2] transition-all"
             />
 
             <button
               type="submit"
               disabled={!chatInput.trim()}
-              className="px-5 py-3 bg-[#7342E2] disabled:opacity-50 hover:bg-[#7342E2]/90 text-white rounded-2xl font-mono text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-xs"
+              className="px-3.5 sm:px-5 py-2.5 sm:py-3 bg-[#7342E2] disabled:opacity-50 hover:bg-[#7342E2]/90 text-white rounded-xl sm:rounded-2xl font-mono text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shadow-xs shrink-0"
             >
               <span>SEND</span>
               <span className="material-symbols-outlined text-base">send</span>
@@ -1436,7 +1436,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
           )}
 
           {/* Ephemeral Bundle / Files List */}
-          <div className="bg-white/90 backdrop-blur-2xl border border-[#192837]/10 rounded-3xl p-5 flex-1 flex flex-col justify-between shadow-sm min-h-[320px]">
+          <div className="bg-white/90 backdrop-blur-2xl border border-[#192837]/10 rounded-2xl sm:rounded-3xl p-4 sm:p-5 flex-1 flex flex-col justify-between shadow-sm min-h-[260px] sm:min-h-[320px]">
             <div>
               <div className="flex justify-between items-center pb-3 border-b border-[#192837]/10 mb-3">
                 <span className="font-heading font-bold text-sm text-[#192837]">
@@ -1520,7 +1520,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
 
       {/* Error Toasts */}
       {errorToasts.length > 0 && (
-        <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm">
+        <div className="fixed bottom-4 right-3 left-3 sm:left-auto sm:right-4 z-50 flex flex-col gap-2 max-w-sm">
           {errorToasts.map((toast) => (
             <div
               key={toast.id}

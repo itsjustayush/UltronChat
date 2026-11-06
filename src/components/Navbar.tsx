@@ -50,7 +50,7 @@ export function Navbar({ currentView, setView, session, onUpdateNickname, latenc
   return (
     <>
       <header className="sticky top-0 z-50 border-b border-white/10 bg-[#050505]/80 backdrop-blur-2xl">
-        <div className="mx-auto flex min-h-[76px] w-full max-w-[1440px] items-center justify-between gap-4 px-5 sm:px-8 lg:px-12">
+        <div className="mx-auto flex min-h-[68px] sm:min-h-[76px] w-full max-w-[1440px] items-center justify-between gap-2 sm:gap-4 px-3 sm:px-8 lg:px-12">
           <button onClick={() => navigate('DASHBOARD')} className="group flex items-center gap-3 text-left" aria-label="Go to UltronChat rooms">
             <span className="grid h-10 w-10 place-items-center rounded-xl border border-white/15 bg-white/[.08] shadow-[0_0_24px_rgba(214,255,98,.08)] transition-transform duration-200 group-hover:scale-105">
               <span className="h-3 w-3 rotate-45 rounded-[3px] bg-[#d6ff62] shadow-[0_0_18px_rgba(214,255,98,.8)]" />
@@ -83,7 +83,7 @@ export function Navbar({ currentView, setView, session, onUpdateNickname, latenc
               {isEditingName ? (
                 <form onSubmit={handleSaveName} className="flex items-center gap-1 rounded-full border border-white/20 bg-white/[.08] p-1">
                   <label htmlFor="nickname" className="sr-only">Guest nickname</label>
-                  <input id="nickname" autoFocus value={nameInput} onChange={(event) => setNameInput(event.target.value)} maxLength={18} className="w-28 bg-transparent px-2 text-xs text-white outline-none" />
+                  <input id="nickname" autoFocus value={nameInput} onChange={(event) => setNameInput(event.target.value)} maxLength={18} className="w-20 sm:w-28 bg-transparent px-2 text-xs text-white outline-none" />
                   <button type="submit" className="grid h-7 w-7 place-items-center rounded-full bg-[#d6ff62] text-[#111]" aria-label="Save nickname"><Save size={13} /></button>
                   <button type="button" onClick={() => setIsEditingName(false)} className="grid h-7 w-7 place-items-center rounded-full text-white/50 hover:bg-white/10 hover:text-white" aria-label="Cancel nickname edit"><X size={13} /></button>
                 </form>
