@@ -49,7 +49,7 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
 
   const handleJoin = async () => {
     const code = otpValues.join('');
-    if (code.length !== 6 || isJoining) return;
+    if (code.length < 4 || isJoining) return;
     setIsJoining(true);
     try {
       await onJoinRoom(code);
@@ -60,8 +60,8 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
 
   const handleScannedRoom = async (code: string) => {
     setShowScanner(false);
-    const clean = code.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6);
-    if (clean.length === 6) {
+    const clean = code.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 16);
+    if (clean.length >= 4) {
       setOtpValues(clean.split(''));
       setIsJoining(true);
       try {
@@ -126,7 +126,7 @@ export function DashboardScreen({ session, onCreateRoom, onJoinRoom, joinError, 
               {otpValues.map((value, index) => <input key={index} ref={(element) => { inputRefs.current[index] = element; }} value={value} onChange={(event) => handleOtpChange(index, event)} onKeyDown={(event) => handleOtpKeyDown(index, event)} aria-label={`Room code character ${index + 1}`} inputMode="text" autoComplete="one-time-code" maxLength={1} className="h-11 sm:h-14 min-w-0 flex-1 rounded-xl border border-white/15 bg-black/25 text-center font-mono text-base sm:text-xl text-white outline-none transition-all focus:border-[#d6ff62] focus:bg-[#d6ff62]/10" />)}
             </div>
             <div className="mt-4 flex gap-2">
-              <button onClick={handleJoin} disabled={otpValues.join('').length !== 6 || isJoining} className="liquid-button liquid-button--solid flex-1 disabled:cursor-not-allowed disabled:opacity-35"><ClipboardPaste size={16} /> {isJoining ? 'Checking active room…' : 'Enter room'} {!isJoining && <ArrowRight size={16} />}</button>
+              <button onClick={handleJoin} disabled={otpValues.join('').length < 4 || isJoining} className="liquid-button liquid-button--solid flex-1 disabled:cursor-not-allowed disabled:opacity-35"><ClipboardPaste size={16} /> {isJoining ? 'Checking active room…' : 'Enter room'} {!isJoining && <ArrowRight size={16} />}</button>
               <button type="button" onClick={() => setShowScanner(true)} className="liquid-button px-4 font-mono text-xs text-white/90 hover:text-white" title="Scan QR Code with Camera"><Scan size={16} className="text-[#d6ff62]" /> <span className="hidden sm:inline">Scan QR</span></button>
             </div>
             {joinError && <p role="alert" className="mt-3 rounded-xl border border-[#ff8e8e]/30 bg-[#ff8e8e]/[.08] px-3 py-2.5 font-mono text-[10px] uppercase tracking-[.08em] text-[#ffb2b2]">{joinError}</p>}

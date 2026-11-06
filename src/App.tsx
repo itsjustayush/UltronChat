@@ -47,7 +47,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
     const cleanRoom = roomParam ? normalizeRoomId(roomParam) : '';
-    if (cleanRoom.length !== 6) return;
+    if (cleanRoom.length < 4 || cleanRoom.length > 16) return;
 
     let cancelled = false;
     findActiveRoom(cleanRoom)
@@ -86,7 +86,7 @@ export default function App() {
 
   const handleJoinRoom = async (otpCode: string) => {
     const cleanOtp = normalizeRoomId(otpCode);
-    if (cleanOtp.length !== 6) return;
+    if (cleanOtp.length < 4 || cleanOtp.length > 16) return;
     setJoinError(null);
 
     try {
