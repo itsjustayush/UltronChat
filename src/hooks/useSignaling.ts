@@ -213,6 +213,9 @@ export function useSignaling(options: UseSignalingOptions): UseSignalingReturn {
         case 'chat_ack':
         case 'typing':
         case 'reaction':
+        case 'file_start':
+        case 'file_chunk':
+        case 'file_end':
           callbacksRef.current.onSignal?.(message);
           break;
 
