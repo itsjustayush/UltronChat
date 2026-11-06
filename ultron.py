@@ -5,8 +5,8 @@ Cross-platform peer-to-peer streaming and file transfer.
 Automatically receives and saves files to the local './ultron' directory.
 
 Usage:
-  python ultron.py create 4567 [--key secret] [--server http://localhost:3000]
-  python ultron.py join 4567 [--key secret] [--server http://localhost:3000]
+  python ultron.py create [--key secret] [--server https://ultronchat.vercel.app]
+  python ultron.py join <room_code> [--key secret] [--server https://ultronchat.vercel.app]
   python ultron.py (interactive prompt)
 """
 
@@ -32,6 +32,8 @@ import hashlib
 import argparse
 import threading
 import subprocess
+import secrets
+import re
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -161,6 +163,22 @@ def remove_ultron_config(file_path: str = CONFIG_FILE_NAME) -> bool:
         os.remove(resolved)
         return True
     return False
+
+
+def generate_room_otp() -> str:
+    """
+    Automatically generates a 6-character room OTP code (e.g. LF6U4C).
+    Hosts NEVER choose custom codes; codes are cryptographically generated.
+    """
+    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(chars) for _ in range(6))
+
+
+def format_room_otp_display(otp: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9]", "", str(otp or "")).upper()
+    if len(clean) == 6:
+        return f"{clean[0:2]}-{clean[2:4]}-{clean[4:6]}"
+    return clean
 
 
 class UltronClient:
@@ -593,9 +611,8 @@ def main():
     parser = argparse.ArgumentParser(description="Ultron Developer P2P File Transfer CLI")
     subparsers = parser.add_subparsers(dest="command")
 
-    # 'create' command
-    create_parser = subparsers.add_parser("create", help="Create a new transfer room")
-    create_parser.add_argument("room_code", nargs="?", default=None, help="Room code (e.g. 4567)")
+    # 'create' command (auto-generates room code)
+    create_parser = subparsers.add_parser("create", help="Create a new transfer room (auto-generates room code)")
     create_parser.add_argument("--key", default=None, help="Optional auth key / password")
     create_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
     create_parser.add_argument("--dir", default=DEFAULT_SAVE_DIR, help="Directory to save received files")
@@ -603,8 +620,8 @@ def main():
     create_parser.add_argument("--no-save", action="store_true", help="Do not persist to ultron.json")
 
     # 'join' command
-    join_parser = subparsers.add_parser("join", help="Join an existing room")
-    join_parser.add_argument("room_code", help="Room code (e.g. 4567)")
+    join_parser = subparsers.add_parser("join", help="Join an existing room with code from host")
+    join_parser.add_argument("room_code", help="Room code from host (e.g. LF-6U-4C)")
     join_parser.add_argument("--key", default=None, help="Optional auth key / password")
     join_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
     join_parser.add_argument("--dir", default=DEFAULT_SAVE_DIR, help="Directory to save received files")
@@ -701,9 +718,19 @@ def main():
             print(f"\n[Ultron] Send Error: {e}")
             sys.exit(1)
 
-    # Command: create
+    # Command: create (auto-generates room code)
     if args.command == "create":
-        room_code = args.room_code or f"ROOM-{int(time.time() * 1000) % 9000 + 1000}"
+        room_code = generate_room_otp()
+        print("=" * 55)
+        print(" ⚡ UltronChat Room Created")
+        print("=" * 55)
+        print(f"  • Room Code : {format_room_otp_display(room_code)} ({room_code})")
+        print(f"  • Share Link: https://ultronchat.vercel.app/?room={room_code}")
+        print(f"  • Role      : HOST (Room Host)")
+        print(f"  • Save Dir  : {args.dir}")
+        print("=" * 55)
+        print(f"Share this room code or link with your friend to connect!\n")
+
         if not getattr(args, "no_save", False):
             save_ultron_config({
                 "roomCode": room_code,
@@ -733,9 +760,10 @@ def main():
 
     # Command: join
     if args.command == "join":
+        clean_code = re.sub(r"[^A-Za-z0-9]", "", args.room_code).upper()
         if not getattr(args, "no_save", False):
             save_ultron_config({
-                "roomCode": args.room_code,
+                "roomCode": clean_code,
                 "isHost": False,
                 "authKey": args.key,
                 "peerName": args.name,
@@ -745,7 +773,7 @@ def main():
             print(f"[Ultron] Saved configuration to ultron.json.")
 
         client = UltronClient(
-            room_code=args.room_code,
+            room_code=clean_code,
             is_host=False,
             auth_key=args.key,
             peer_name=args.name,
@@ -815,17 +843,28 @@ def main():
         print("\nExiting.")
         sys.exit(0)
 
-    is_host = choice == "1"
-    default_room = f"ROOM-{int(time.time() * 1000) % 9000 + 1000}" if is_host else "4567"
-    prompt_str = f"Enter Room Code (e.g. 4567, or Enter for {default_room}): " if is_host else "Enter Room Code to connect to (e.g. 4567): "
+    is_host = choice != "2"
+    if is_host:
+        # Hosts NEVER choose custom codes; codes are cryptographically generated
+        code = generate_room_otp()
+        print("\n[Ultron] Room created successfully!")
+        print(f"  • Auto-Generated Room Code: {format_room_otp_display(code)} ({code})")
+        print(f"  • Share Link              : https://ultronchat.vercel.app/?room={code}")
+        print("Share this code or link with your friend to connect!\n")
+    else:
+        try:
+            raw_input = input("Enter Room Code from host (e.g. LF-6U-4C): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting.")
+            sys.exit(0)
+        code = re.sub(r"[^A-Za-z0-9]", "", raw_input).upper()
+        if not code:
+            print("Error: Room code is required to join.")
+            sys.exit(1)
 
     try:
-        code = input(prompt_str).strip().upper() or (default_room if is_host else "")
-        if not code:
-            print("Error: Room code is required.")
-            sys.exit(1)
         auth = input("Enter Auth Key / Password (optional, press Enter to skip): ").strip() or None
-        name = input("Enter your Dev Name (optional): ").strip() or None
+        name = input(f"Enter your Dev Name (optional, default: PyDev-{code[-4:]}): ").strip() or None
         save_folder = input("Save received files to [default: ./ultron]: ").strip() or DEFAULT_SAVE_DIR
         server_val = input(f"Signaling server [default: {DEFAULT_SERVER}]: ").strip() or DEFAULT_SERVER
     except (KeyboardInterrupt, EOFError):

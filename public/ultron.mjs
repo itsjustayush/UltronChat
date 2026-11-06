@@ -164,6 +164,28 @@ export function removeUltronConfig(filePath = CONFIG_FILE_NAME) {
   return false;
 }
 
+/**
+ * Automatically generates a 6-character room OTP code (e.g. LF6U4C).
+ * Hosts NEVER choose custom codes; codes are cryptographically generated.
+ */
+export function generateRoomOtp() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(6);
+  let result = '';
+  for (let i = 0; i < 6; i++) {
+    result += chars[bytes[i] % chars.length];
+  }
+  return result;
+}
+
+export function formatRoomOtpDisplay(otp) {
+  const clean = String(otp || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (clean.length === 6) {
+    return `${clean.slice(0, 2)}-${clean.slice(2, 4)}-${clean.slice(4, 6)}`;
+  }
+  return clean;
+}
+
 export class UltronClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -678,12 +700,12 @@ async function main() {
  ⚡ UltronChat Developer CLI (Node.js)
 =======================================================
 Usage:
-  npx ultron                     Read ultron.json or launch setup wizard
-  npx ultron create [room_code]  Create a room and save to ultron.json
-  npx ultron join <room_code>    Join an existing room and save to ultron.json
-  npx ultron send <file_path>    Send a file using active ultron.json room
-  npx ultron status              Display ultron.json config and room state
-  npx ultron reset               Remove local ultron.json configuration
+  npx ultron                  Read ultron.json or launch setup wizard
+  npx ultron create           Create a new room (auto-generates code)
+  npx ultron join <room_code> Join an existing room with code from host
+  npx ultron send <file_path> Send a file using active ultron.json room
+  npx ultron status           Display ultron.json config and room state
+  npx ultron reset            Remove local ultron.json configuration
 
 Options:
   --key <secret>                 Optional room authorization key / password
@@ -785,18 +807,68 @@ Options:
     return;
   }
 
-  // Command: create or join with optional CLI args
-  if (command === 'create' || command === 'join' || command === 'connect') {
-    let roomCode = args[1];
-    const isHost = command === 'create';
+  // Command: create (auto-generates room code)
+  if (command === 'create') {
+    const isHost = true;
     const noSave = args.includes('--no-save');
+    const roomCode = generateRoomOtp();
 
-    if (!roomCode && isHost) {
-      roomCode = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
-    } else if (!roomCode) {
-      console.error(`Usage: npx ultron ${command} <room_code> [--key secret]`);
+    const authKey = getArg('--key');
+    const serverUrl = getArg('--server', DEFAULT_SERVER);
+    const saveDir = getArg('--dir', DEFAULT_SAVE_DIR);
+    const peerName = getArg('--name');
+
+    console.log('='.repeat(55));
+    console.log(' ⚡ UltronChat Room Created');
+    console.log('='.repeat(55));
+    console.log(`  • Room Code : ${formatRoomOtpDisplay(roomCode)} (${roomCode})`);
+    console.log(`  • Share Link: https://ultronchat.vercel.app/?room=${roomCode}`);
+    console.log(`  • Role      : HOST (Room Host)`);
+    console.log(`  • Save Dir  : ${saveDir}`);
+    console.log('='.repeat(55));
+    console.log(`Share this room code or link with your friend to connect!\n`);
+
+    if (!noSave) {
+      saveUltronConfig({
+        roomCode,
+        isHost,
+        authKey,
+        serverUrl,
+        saveDir,
+        peerName,
+      });
+      console.log(`[Ultron] Saved room configuration to ultron.json.`);
+    }
+
+    const client = new UltronClient({
+      roomCode,
+      isHost,
+      authKey,
+      serverUrl,
+      saveDir,
+      peerName,
+    });
+
+    try {
+      await client.connect();
+      await runInteractiveCli(client);
+    } catch (err) {
+      console.error(`\n[Ultron] Connection error: ${err.message}`);
       process.exit(1);
     }
+    return;
+  }
+
+  // Command: join or connect (requires room code from host)
+  if (command === 'join' || command === 'connect') {
+    const rawCode = args[1]?.trim()?.toUpperCase()?.replace(/[^A-Za-z0-9]/g, '');
+    if (!rawCode) {
+      console.error(`Usage: npx ultron join <room_code> [--key secret]`);
+      process.exit(1);
+    }
+    const roomCode = rawCode;
+    const isHost = false;
+    const noSave = args.includes('--no-save');
 
     const authKey = getArg('--key');
     const serverUrl = getArg('--server', DEFAULT_SERVER);
@@ -905,18 +977,19 @@ Options:
   console.log(`Let's configure your P2P room connection.\n`);
 
   const choice = (await question('Do you want to (1) Create a new room or (2) Connect/Join an existing room? [1/2]: ')).trim();
-  const isHost = choice === '1';
+  const isHost = choice !== '2';
 
-  let defaultRoom = isHost ? `ROOM-${Math.floor(1000 + Math.random() * 9000)}` : '4567';
-  const roomPrompt = isHost
-    ? `Enter Room Code (e.g. 4567, or press Enter for ${defaultRoom}): `
-    : `Enter Room Code to connect to (e.g. 4567): `;
-
-  let roomCode = (await question(roomPrompt)).trim().toUpperCase();
-  if (!roomCode) {
-    if (isHost) {
-      roomCode = defaultRoom;
-    } else {
+  let roomCode = '';
+  if (isHost) {
+    // Hosts NEVER choose room codes; room codes are cryptographically generated
+    roomCode = generateRoomOtp();
+    console.log(`\n[Ultron] Room created successfully!`);
+    console.log(`  • Auto-Generated Room Code: ${formatRoomOtpDisplay(roomCode)} (${roomCode})`);
+    console.log(`  • Share Link              : https://ultronchat.vercel.app/?room=${roomCode}`);
+    console.log(`Share this code or link with your friend to connect!\n`);
+  } else {
+    roomCode = (await question('Enter Room Code from host (e.g. LF-6U-4C): ')).trim().toUpperCase().replace(/[^A-Za-z0-9]/g, '');
+    if (!roomCode) {
       console.error('Error: Room code is required to join.');
       rl.close();
       process.exit(1);
