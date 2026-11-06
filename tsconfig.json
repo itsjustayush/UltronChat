@@ -23,5 +23,5 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "exclude": ["supabase/functions"]
+  "exclude": ["mobile", "dist", "neon"]
 }

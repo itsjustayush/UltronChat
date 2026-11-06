@@ -44,3 +44,4 @@ CREATE INDEX IF NOT EXISTS ultronchat_room_peers_composite_idx ON public.ultronc
 CREATE INDEX IF NOT EXISTS ultronchat_room_peers_expires_at_idx ON public.ultronchat_room_peers (expires_at);
 CREATE INDEX IF NOT EXISTS ultronchat_room_events_poll_idx ON public.ultronchat_room_events (room_code, target_peer_id, id);
 CREATE INDEX IF NOT EXISTS ultronchat_room_events_expires_idx ON public.ultronchat_room_events (expires_at);
+

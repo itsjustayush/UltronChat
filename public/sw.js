@@ -25,8 +25,8 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Never cache API, WebSocket, or Supabase signaling requests
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws') || url.hostname.includes('supabase.co')) {
+  // Never cache API, WebSocket, or Neon database requests
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws') || url.hostname.includes('neon.tech')) {
     return;
   }
 

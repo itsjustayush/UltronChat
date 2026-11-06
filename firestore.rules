@@ -2,7 +2,7 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Room and peer presence are stored in the dedicated Supabase registry.
+    // Room and peer presence are stored in the dedicated Neon PostgreSQL registry.
     // Firestore remains disabled so messages, files, and signaling content cannot
     // become a cloud archive through a stale client.
     match /{document=**} {
