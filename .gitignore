@@ -10,3 +10,5 @@ ultron/
 
 # UltronChat transient P2P room config & downloaded files
 ultron.json
+__pycache__/
+*.pyc

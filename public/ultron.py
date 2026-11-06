@@ -167,7 +167,7 @@ def remove_ultron_config(file_path: str = CONFIG_FILE_NAME) -> bool:
 
 def generate_room_otp() -> str:
     """
-    Automatically generates a 6-character room OTP code (e.g. LF6U4C).
+    Automatically generates a 6-character room OTP code (e.g. C4GQA5).
     Hosts NEVER choose custom codes; codes are cryptographically generated.
     """
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -175,10 +175,22 @@ def generate_room_otp() -> str:
 
 
 def format_room_otp_display(otp: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9]", "", str(otp or "")).upper()
-    if len(clean) == 6:
-        return f"{clean[0:2]}-{clean[2:4]}-{clean[4:6]}"
-    return clean
+    return re.sub(r"[^A-Za-z0-9]", "", str(otp or "")).upper()
+
+
+def parse_room_code(input_str: str) -> str:
+    """
+    Normalizes input which can be:
+    - A 6-char alphanumeric room code (e.g. "C4GQA5")
+    - A full share link (e.g. "https://ultronchat.vercel.app?room=C4GQA5")
+    """
+    if not input_str:
+        return ""
+    s = str(input_str).strip()
+    match = re.search(r"[?&]room=([A-Za-z0-9_-]+)", s, re.IGNORECASE)
+    if match:
+        return re.sub(r"[^A-Za-z0-9]", "", match.group(1)).upper()
+    return re.sub(r"[^A-Za-z0-9]", "", s).upper()
 
 
 class UltronClient:
@@ -620,8 +632,8 @@ def main():
     create_parser.add_argument("--no-save", action="store_true", help="Do not persist to ultron.json")
 
     # 'join' command
-    join_parser = subparsers.add_parser("join", help="Join an existing room with code from host")
-    join_parser.add_argument("room_code", help="Room code from host (e.g. LF-6U-4C)")
+    join_parser = subparsers.add_parser("join", help="Join an existing room with code or share link")
+    join_parser.add_argument("room_code", help="Room code or share URL (e.g. C4GQA5 or https://ultronchat.vercel.app?room=C4GQA5)")
     join_parser.add_argument("--key", default=None, help="Optional auth key / password")
     join_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
     join_parser.add_argument("--dir", default=DEFAULT_SAVE_DIR, help="Directory to save received files")
@@ -631,7 +643,7 @@ def main():
     # 'send' quick command
     send_parser = subparsers.add_parser("send", help="Quickly send a file into a room")
     send_parser.add_argument("file_path", help="Path to file to send")
-    send_parser.add_argument("--room", default=None, help="Room code (e.g. 4567, defaults to ultron.json)")
+    send_parser.add_argument("--room", default=None, help="Room code or share URL (e.g. C4GQA5, defaults to ultron.json)")
     send_parser.add_argument("--key", default=None, help="Optional auth key / password")
     send_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
 
@@ -688,9 +700,9 @@ def main():
     # Command: send
     if args.command == "send":
         existing = find_ultron_config()
-        room_code = args.room or (existing and existing["config"].get("roomCode"))
+        room_code = parse_room_code(args.room or (existing and existing["config"].get("roomCode")))
         if not room_code:
-            print("Error: No active room. Pass --room <code> or configure ultron.json first.")
+            print("Error: No active room. Pass --room <code_or_url> or configure ultron.json first.")
             sys.exit(1)
         if not os.path.isfile(args.file_path):
             print(f"Error: File not found: {args.file_path}")
@@ -724,10 +736,10 @@ def main():
         print("=" * 55)
         print(" ⚡ UltronChat Room Created")
         print("=" * 55)
-        print(f"  • Room Code : {format_room_otp_display(room_code)} ({room_code})")
-        print(f"  • Share Link: https://ultronchat.vercel.app/?room={room_code}")
+        print(f"  • Room Code : {room_code}")
+        print(f"  • Share Link: https://ultronchat.vercel.app?room={room_code}")
         print(f"  • Role      : HOST (Room Host)")
-        print(f"  • Save Dir  : {args.dir}")
+        print(f"  • Save Dir  : {args.dir} (incoming files auto-saved here)")
         print("=" * 55)
         print(f"Share this room code or link with your friend to connect!\n")
 
@@ -760,7 +772,10 @@ def main():
 
     # Command: join
     if args.command == "join":
-        clean_code = re.sub(r"[^A-Za-z0-9]", "", args.room_code).upper()
+        clean_code = parse_room_code(args.room_code)
+        if not clean_code:
+            print("Error: Valid room code or share link is required.")
+            sys.exit(1)
         if not getattr(args, "no_save", False):
             save_ultron_config({
                 "roomCode": clean_code,
@@ -848,18 +863,18 @@ def main():
         # Hosts NEVER choose custom codes; codes are cryptographically generated
         code = generate_room_otp()
         print("\n[Ultron] Room created successfully!")
-        print(f"  • Auto-Generated Room Code: {format_room_otp_display(code)} ({code})")
-        print(f"  • Share Link              : https://ultronchat.vercel.app/?room={code}")
+        print(f"  • Room Code : {code}")
+        print(f"  • Share Link: https://ultronchat.vercel.app?room={code}")
         print("Share this code or link with your friend to connect!\n")
     else:
         try:
-            raw_input = input("Enter Room Code from host (e.g. LF-6U-4C): ").strip()
+            raw_input = input("Enter Room Code or Share URL from host (e.g. C4GQA5 or https://ultronchat.vercel.app?room=C4GQA5): ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nExiting.")
             sys.exit(0)
-        code = re.sub(r"[^A-Za-z0-9]", "", raw_input).upper()
+        code = parse_room_code(raw_input)
         if not code:
-            print("Error: Room code is required to join.")
+            print("Error: Room code or share link is required to join.")
             sys.exit(1)
 
     try:

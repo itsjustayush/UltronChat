@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { executeNeonRoomAction } from '../src/server/neonRoomRegistry.ts';
 
-const ROOM_CODE = '4567';
+const ROOM_CODE = 'C4GQA5';
 const AUTH_KEY = 'dev-secret-99';
 const HOST_ID = 'dev-host-tester';
 const GUEST_ID = 'dev-guest-tester';
@@ -17,9 +17,9 @@ async function callRegistry(action, payload) {
 }
 
 async function runDevTest() {
-  console.log('[Dev Test] Testing 4-digit room 4567 with auth and two-way file transfer...');
+  console.log('[Dev Test] Testing 6-char room C4GQA5 with auth and two-way file transfer...');
 
-  // 1. Create room 4567 with auth key
+  // 1. Create room C4GQA5 with auth key
   const created = await callRegistry('create', {
     roomCode: ROOM_CODE,
     peerId: HOST_ID,

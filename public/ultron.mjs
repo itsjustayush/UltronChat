@@ -5,9 +5,11 @@
  * Automatically receives and saves files to the local './ultron' directory.
  *
  * Usage:
- *   node ultron.mjs create 4567 [--key secret] [--server http://localhost:3000]
- *   node ultron.mjs join 4567 [--key secret] [--server http://localhost:3000]
- *   node ultron.mjs (interactive prompt)
+ *   ultron create                     Create a room (auto-generates code like C4GQA5)
+ *   ultron join C4GQA5                Join with room code or link
+ *   ultron join https://ultronchat.vercel.app?room=C4GQA5
+ *   ultron send <file_path>           Send file to connected peers
+ *   ultron                            Interactive terminal setup
  */
 
 import fs from 'node:fs';
@@ -165,7 +167,7 @@ export function removeUltronConfig(filePath = CONFIG_FILE_NAME) {
 }
 
 /**
- * Automatically generates a 6-character room OTP code (e.g. LF6U4C).
+ * Automatically generates a 6-character room OTP code (e.g. C4GQA5).
  * Hosts NEVER choose custom codes; codes are cryptographically generated.
  */
 export function generateRoomOtp() {
@@ -179,11 +181,22 @@ export function generateRoomOtp() {
 }
 
 export function formatRoomOtpDisplay(otp) {
-  const clean = String(otp || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-  if (clean.length === 6) {
-    return `${clean.slice(0, 2)}-${clean.slice(2, 4)}-${clean.slice(4, 6)}`;
+  return String(otp || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
+/**
+ * Normalizes input which can be:
+ * - A 6-char alphanumeric room code (e.g. "C4GQA5")
+ * - A full share link (e.g. "https://ultronchat.vercel.app?room=C4GQA5")
+ */
+export function parseRoomCode(input) {
+  if (!input) return '';
+  const str = String(input).trim();
+  const urlMatch = str.match(/[?&]room=([A-Za-z0-9_-]+)/i);
+  if (urlMatch) {
+    return urlMatch[1].replace(/[^A-Za-z0-9]/g, '').toUpperCase();
   }
-  return clean;
+  return str.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
 export class UltronClient extends EventEmitter {
@@ -700,12 +713,12 @@ async function main() {
  ⚡ UltronChat Developer CLI (Node.js)
 =======================================================
 Usage:
-  npx ultron                  Read ultron.json or launch setup wizard
-  npx ultron create           Create a new room (auto-generates code)
-  npx ultron join <room_code> Join an existing room with code from host
-  npx ultron send <file_path> Send a file using active ultron.json room
-  npx ultron status           Display ultron.json config and room state
-  npx ultron reset            Remove local ultron.json configuration
+  ultron                             Read ultron.json or launch setup wizard
+  ultron create                      Create a new room (auto-generates code like C4GQA5)
+  ultron join <room_code_or_url>     Join room with code or link (e.g. C4GQA5)
+  ultron send <file_path>            Send a file using active ultron.json room
+  ultron status                      Display ultron.json config and room state
+  ultron reset                       Remove local ultron.json configuration
 
 Options:
   --key <secret>                 Optional room authorization key / password
@@ -771,9 +784,9 @@ Options:
     }
 
     const existing = findUltronConfig(getArg('--config'));
-    const roomCode = getArg('--room') || existing?.config?.roomCode;
+    const roomCode = parseRoomCode(getArg('--room') || existing?.config?.roomCode);
     if (!roomCode) {
-      console.error(`Error: No active room. Run 'npx ultron' to create/join a room first, or pass --room <code>.`);
+      console.error(`Error: No active room. Pass --room <code_or_url> or run 'ultron' to configure.`);
       process.exit(1);
     }
 
@@ -821,10 +834,10 @@ Options:
     console.log('='.repeat(55));
     console.log(' ⚡ UltronChat Room Created');
     console.log('='.repeat(55));
-    console.log(`  • Room Code : ${formatRoomOtpDisplay(roomCode)} (${roomCode})`);
-    console.log(`  • Share Link: https://ultronchat.vercel.app/?room=${roomCode}`);
+    console.log(`  • Room Code : ${roomCode}`);
+    console.log(`  • Share Link: https://ultronchat.vercel.app?room=${roomCode}`);
     console.log(`  • Role      : HOST (Room Host)`);
-    console.log(`  • Save Dir  : ${saveDir}`);
+    console.log(`  • Save Dir  : ${saveDir} (auto-saves received files)`);
     console.log('='.repeat(55));
     console.log(`Share this room code or link with your friend to connect!\n`);
 
@@ -859,14 +872,15 @@ Options:
     return;
   }
 
-  // Command: join or connect (requires room code from host)
+  // Command: join or connect (requires room code or share URL from host)
   if (command === 'join' || command === 'connect') {
-    const rawCode = args[1]?.trim()?.toUpperCase()?.replace(/[^A-Za-z0-9]/g, '');
-    if (!rawCode) {
-      console.error(`Usage: npx ultron join <room_code> [--key secret]`);
+    const roomCode = parseRoomCode(args[1]);
+    if (!roomCode) {
+      console.error(`Usage: ultron join <room_code_or_url> [--key secret]`);
+      console.error(`Example: ultron join C4GQA5`);
+      console.error(`Example: ultron join https://ultronchat.vercel.app?room=C4GQA5`);
       process.exit(1);
     }
-    const roomCode = rawCode;
     const isHost = false;
     const noSave = args.includes('--no-save');
 
@@ -984,13 +998,14 @@ Options:
     // Hosts NEVER choose room codes; room codes are cryptographically generated
     roomCode = generateRoomOtp();
     console.log(`\n[Ultron] Room created successfully!`);
-    console.log(`  • Auto-Generated Room Code: ${formatRoomOtpDisplay(roomCode)} (${roomCode})`);
-    console.log(`  • Share Link              : https://ultronchat.vercel.app/?room=${roomCode}`);
+    console.log(`  • Room Code : ${roomCode}`);
+    console.log(`  • Share Link: https://ultronchat.vercel.app?room=${roomCode}`);
     console.log(`Share this code or link with your friend to connect!\n`);
   } else {
-    roomCode = (await question('Enter Room Code from host (e.g. LF-6U-4C): ')).trim().toUpperCase().replace(/[^A-Za-z0-9]/g, '');
+    const rawJoin = (await question('Enter Room Code or Share URL from host (e.g. C4GQA5 or https://ultronchat.vercel.app?room=C4GQA5): ')).trim();
+    roomCode = parseRoomCode(rawJoin);
     if (!roomCode) {
-      console.error('Error: Room code is required to join.');
+      console.error('Error: Room code or share link is required to join.');
       rl.close();
       process.exit(1);
     }
