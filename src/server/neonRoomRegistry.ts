@@ -34,10 +34,11 @@ function hashAuthKey(key: unknown): string | null {
 }
 
 function getSql() {
+  const rawUrl = process.env.NEON_DATABASE_URL || process.env.DATABASE_URL;
   const dbUrl =
-    process.env.DATABASE_URL ||
-    process.env.NEON_DATABASE_URL ||
-    DEFAULT_DATABASE_URL;
+    rawUrl && !rawUrl.includes('supabase.co')
+      ? rawUrl
+      : DEFAULT_DATABASE_URL;
   return neon(dbUrl);
 }
 
