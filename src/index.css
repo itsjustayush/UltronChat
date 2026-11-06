@@ -20,8 +20,15 @@
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-* { box-sizing: border-box; }
-html { background: var(--bg); scroll-behavior: smooth; }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -32,15 +39,44 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
-button, input { font: inherit; }
-button { cursor: pointer; }
-button:disabled { cursor: not-allowed; }
-a { color: inherit; text-decoration: none; }
-::selection { background: var(--accent); color: #101010; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--accent);
+  color: #101010;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 
 @layer base {
-  h1, h2, h3, h4, p { margin: 0; }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  p {
+    margin: 0;
+  }
 }
 
 .app-shell {
@@ -61,7 +97,7 @@ a { color: inherit; text-decoration: none; }
   pointer-events: none;
   content: '';
   opacity: 0.18;
-  background-image: linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+  background-image: linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: linear-gradient(to bottom, black, transparent 75%);
 }
@@ -77,8 +113,8 @@ a { color: inherit; text-decoration: none; }
 
 .glass-panel {
   border: 1px solid var(--line);
-  background: linear-gradient(145deg, rgba(255,255,255,.095), rgba(255,255,255,.025) 48%, rgba(255,255,255,.015));
-  box-shadow: 0 24px 70px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.07);
+  background: linear-gradient(145deg, rgba(255, 255, 255, .095), rgba(255, 255, 255, .025) 48%, rgba(255, 255, 255, .015));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .07);
   backdrop-filter: blur(18px);
 }
 
@@ -92,67 +128,197 @@ a { color: inherit; text-decoration: none; }
   gap: .55rem;
   min-height: 44px;
   padding: 0 1.1rem;
-  border: 1px solid rgba(255,255,255,.28);
+  border: 1px solid rgba(255, 255, 255, .28);
   border-radius: 999px;
   color: var(--text);
-  background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.035));
+  background: linear-gradient(135deg, rgba(255, 255, 255, .14), rgba(255, 255, 255, .035));
   transition: transform 180ms var(--ease-out), border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
+
 .liquid-button::after {
   position: absolute;
   inset: 0;
   z-index: -1;
   content: '';
   transform: translateX(-120%);
-  background: linear-gradient(110deg, transparent 25%, rgba(255,255,255,.28) 50%, transparent 75%);
+  background: linear-gradient(110deg, transparent 25%, rgba(255, 255, 255, .28) 50%, transparent 75%);
   transition: transform 600ms var(--ease-out);
 }
-.liquid-button:hover { border-color: rgba(255,255,255,.62); background: rgba(255,255,255,.12); box-shadow: 0 0 24px rgba(255,255,255,.08); }
-.liquid-button:hover::after { transform: translateX(120%); }
-.liquid-button:active { transform: scale(.97); }
-.liquid-button--solid { border-color: var(--accent); color: #101010; background: var(--accent); box-shadow: 0 0 30px rgba(214,255,98,.16); }
-.liquid-button--solid:hover { border-color: #edffb0; background: #e6ff8e; box-shadow: 0 0 34px rgba(214,255,98,.28); }
 
-.page-reveal { animation: page-reveal 700ms var(--ease-out) both; }
-.stagger-reveal { animation: stagger-reveal 700ms var(--ease-out) both; animation-delay: var(--delay, 80ms); }
-@keyframes page-reveal { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
-@keyframes stagger-reveal { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+.liquid-button:hover {
+  border-color: rgba(255, 255, 255, .62);
+  background: rgba(255, 255, 255, .12);
+  box-shadow: 0 0 24px rgba(255, 255, 255, .08);
+}
 
-.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-.custom-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: rgba(255,255,255,.16); }
+.liquid-button:hover::after {
+  transform: translateX(120%);
+}
+
+.liquid-button:active {
+  transform: scale(.97);
+}
+
+.liquid-button--solid {
+  border-color: var(--accent);
+  color: #101010;
+  background: var(--accent);
+  box-shadow: 0 0 30px rgba(214, 255, 98, .16);
+}
+
+.liquid-button--solid:hover {
+  border-color: #edffb0;
+  background: #e6ff8e;
+  box-shadow: 0 0 34px rgba(214, 255, 98, .28);
+}
+
+.page-reveal {
+  animation: page-reveal 700ms var(--ease-out) both;
+}
+
+.stagger-reveal {
+  animation: stagger-reveal 700ms var(--ease-out) both;
+  animation-delay: var(--delay, 80ms);
+}
+
+@keyframes page-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes stagger-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .16);
+}
 
 /* Keep the existing feature screens on the new design language while their layouts are incrementally migrated. */
-.room-shell, .history-shell, .network-shell {
+.room-shell,
+.history-shell,
+.network-shell {
   color: var(--text);
   background: transparent !important;
 }
-.room-shell [class*="bg-[#F2F2EE]"], .room-shell [class*="bg-white"], .history-shell [class*="bg-white"], .network-shell [class*="bg-white"] { background-color: rgba(255,255,255,.055) !important; }
-.room-shell [class*="text-[#192837]"], .history-shell [class*="text-[#192837]"], .network-shell [class*="text-[#192837]"] { color: var(--text) !important; }
-.room-shell [class*="border-[#192837]"], .history-shell [class*="border-[#192837]"], .network-shell [class*="border-[#192837]"] { border-color: var(--line) !important; }
-.room-shell input { color: var(--text); background: rgba(255,255,255,.055); }
-.room-shell input::placeholder { color: rgba(255,255,255,.42); }
+
+.room-shell [class*="bg-[#F2F2EE]"],
+.room-shell [class*="bg-white"],
+.history-shell [class*="bg-white"],
+.network-shell [class*="bg-white"] {
+  background-color: rgba(255, 255, 255, .055) !important;
+}
+
+.room-shell [class*="text-[#192837]"],
+.history-shell [class*="text-[#192837]"],
+.network-shell [class*="text-[#192837]"] {
+  color: var(--text) !important;
+}
+
+.room-shell [class*="border-[#192837]"],
+.history-shell [class*="border-[#192837]"],
+.network-shell [class*="border-[#192837]"] {
+  border-color: var(--line) !important;
+}
+
+.room-shell input {
+  color: var(--text);
+  background: rgba(255, 255, 255, .055);
+}
+
+.room-shell input::placeholder {
+  color: rgba(255, 255, 255, .42);
+}
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
 }
 
 @media (max-width: 720px) {
-  .app-shell::before { background-size: 38px 38px; }
+  .app-shell::before {
+    background-size: 38px 38px;
+  }
 }
 
 /* Active room migration layer: keep the existing workflow, but make every surface
    read as part of the same UltronChat visual system. */
-.room-shell [class*="bg-[#7342E2]"] { background-color: var(--accent) !important; color: #101010 !important; }
-.room-shell [class*="bg-[#7342E2]/10"], .room-shell [class*="bg-[#7342E2]/20"] { background-color: var(--accent-soft) !important; color: var(--accent) !important; }
-.room-shell [class*="text-[#7342E2]"] { color: var(--accent) !important; }
-.room-shell [class*="border-[#7342E2]"] { border-color: rgba(214,255,98,.35) !important; }
-.room-shell [class*="bg-emerald-500/10"] { background-color: rgba(214,255,98,.08) !important; }
-.room-shell [class*="text-emerald-700"], .room-shell [class*="text-emerald-600"] { color: var(--accent) !important; }
-.room-shell [class*="border-emerald-500"] { border-color: rgba(214,255,98,.3) !important; }
-.room-shell [class*="bg-red-600"] { background-color: rgba(255,142,142,.12) !important; border: 1px solid rgba(255,142,142,.3); }
-.room-shell [class*="text-red-600"] { color: #ffb2b2 !important; }
-.room-shell [class*="bg-[#7342E2]"][class*="text-white"] { color: #101010 !important; }
+.room-shell [class*="bg-[#7342E2]"] {
+  background-color: var(--accent) !important;
+  color: #101010 !important;
+}
+
+.room-shell [class*="bg-[#7342E2]/10"],
+.room-shell [class*="bg-[#7342E2]/20"] {
+  background-color: var(--accent-soft) !important;
+  color: var(--accent) !important;
+}
+
+.room-shell [class*="text-[#7342E2]"] {
+  color: var(--accent) !important;
+}
+
+.room-shell [class*="border-[#7342E2]"] {
+  border-color: rgba(214, 255, 98, .35) !important;
+}
+
+.room-shell [class*="bg-emerald-500/10"] {
+  background-color: rgba(214, 255, 98, .08) !important;
+}
+
+.room-shell [class*="text-emerald-700"],
+.room-shell [class*="text-emerald-600"] {
+  color: var(--accent) !important;
+}
+
+.room-shell [class*="border-emerald-500"] {
+  border-color: rgba(214, 255, 98, .3) !important;
+}
+
+.room-shell [class*="bg-red-600"] {
+  background-color: rgba(255, 142, 142, .12) !important;
+  border: 1px solid rgba(255, 142, 142, .3);
+}
+
+.room-shell [class*="text-red-600"] {
+  color: #ffb2b2 !important;
+}
+
+.room-shell [class*="bg-[#7342E2]"][class*="text-white"] {
+  color: #101010 !important;
+}
 
 
 /* Mobile & Notch / Home Indicator Safe-Area Insets */
@@ -175,9 +341,10 @@ footer {
   body {
     -webkit-tap-highlight-color: transparent;
   }
-  
+
   /* Prevent horizontal scroll on small devices */
-  html, body {
+  html,
+  body {
     overflow-x: hidden;
   }
 }

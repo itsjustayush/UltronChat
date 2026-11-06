@@ -15,10 +15,154 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import readline from 'node:readline';
 import { EventEmitter } from 'node:events';
+import { execSync } from 'node:child_process';
 
-const DEFAULT_SERVER = process.env.ULTRON_SERVER_URL || 'http://localhost:3000';
+const CONFIG_FILE_NAME = 'ultron.json';
+const DEFAULT_SERVER = process.env.ULTRON_SERVER_URL || 'https://ultronchat.vercel.app';
 const DEFAULT_SAVE_DIR = process.env.ULTRON_SAVE_DIR || './ultron';
 const CHUNK_SIZE_BYTES = 24 * 1024; // 24 KB chunk size
+
+/**
+ * Checks if current directory or any ancestor is a Git repo.
+ * If so, automatically ensures ultron.json and saveDir are in .gitignore.
+ */
+export function ensureGitignore(configName = CONFIG_FILE_NAME, saveDir = DEFAULT_SAVE_DIR) {
+  try {
+    let isGit = false;
+    let gitRoot = null;
+
+    // Check directory ancestry for .git
+    let curr = process.cwd();
+    while (curr) {
+      if (fs.existsSync(path.join(curr, '.git'))) {
+        isGit = true;
+        gitRoot = curr;
+        break;
+      }
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+
+    if (!isGit) {
+      try {
+        const root = execSync('git rev-parse --show-toplevel', {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          encoding: 'utf8',
+        }).trim();
+        if (root) {
+          isGit = true;
+          gitRoot = root;
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    if (!isGit || !gitRoot) return false;
+
+    const gitignorePath = path.join(gitRoot, '.gitignore');
+    let content = '';
+    if (fs.existsSync(gitignorePath)) {
+      content = fs.readFileSync(gitignorePath, 'utf8');
+    }
+
+    const relSave = path.relative(gitRoot, path.resolve(saveDir)).replace(/\\/g, '/');
+    const savePattern = relSave.endsWith('/') ? relSave : `${relSave}/`;
+
+    const toAdd = [];
+    if (!content.includes(configName)) {
+      toAdd.push(configName);
+    }
+    if (!content.includes(savePattern) && !content.includes('ultron/')) {
+      toAdd.push(savePattern);
+    }
+
+    if (toAdd.length > 0) {
+      const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+      const addition = `${prefix}\n# UltronChat transient P2P room config & downloaded files\n` +
+        toAdd.join('\n') + '\n';
+      fs.writeFileSync(gitignorePath, content + addition, 'utf8');
+      console.log(`[Ultron] Protected: Added ${toAdd.join(', ')} to .gitignore`);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Locate existing ultron.json in current directory or parent directories.
+ */
+export function findUltronConfig(customPath = null) {
+  if (customPath) {
+    const resolved = path.resolve(customPath);
+    if (fs.existsSync(resolved)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+        return { path: resolved, config: parsed };
+      } catch (err) {
+        console.warn(`[Ultron] Warning: Could not parse ${resolved}: ${err.message}`);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  let curr = process.cwd();
+  while (curr) {
+    const candidate = path.join(curr, CONFIG_FILE_NAME);
+    if (fs.existsSync(candidate)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        return { path: candidate, config: parsed };
+      } catch (err) {
+        console.warn(`[Ultron] Warning: Could not parse ${candidate}: ${err.message}`);
+      }
+    }
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+  return null;
+}
+
+/**
+ * Save configuration to ultron.json and ensure .gitignore protection.
+ */
+export function saveUltronConfig(config, filePath = CONFIG_FILE_NAME) {
+  const resolved = path.resolve(filePath);
+  const data = {
+    $schema: 'https://ultronchat.vercel.app/schemas/ultron.json',
+    roomCode: String(config.roomCode || '').trim().toUpperCase(),
+    role: config.isHost ? 'host' : 'peer',
+    isHost: Boolean(config.isHost),
+    serverUrl: config.serverUrl || DEFAULT_SERVER,
+    saveDir: config.saveDir || DEFAULT_SAVE_DIR,
+    authKey: config.authKey ? String(config.authKey).trim() : null,
+    peerName: config.peerName || null,
+    autoDownload: config.autoDownload ?? true,
+    createdAt: config.createdAt || new Date().toISOString(),
+    lastConnectedAt: new Date().toISOString(),
+  };
+
+  fs.writeFileSync(resolved, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  ensureGitignore(CONFIG_FILE_NAME, data.saveDir);
+  return { path: resolved, config: data };
+}
+
+/**
+ * Remove local ultron.json config.
+ */
+export function removeUltronConfig(filePath = CONFIG_FILE_NAME) {
+  const resolved = path.resolve(filePath);
+  if (fs.existsSync(resolved)) {
+    fs.unlinkSync(resolved);
+    return true;
+  }
+  return false;
+}
 
 export class UltronClient extends EventEmitter {
   constructor(options = {}) {
@@ -521,7 +665,7 @@ async function runInteractiveCli(client) {
 // -------------------------------------------------------------
 async function main() {
   const args = process.argv.slice(2);
-  const command = args[0];
+  const command = args[0]?.toLowerCase();
 
   function getArg(flag, defaultValue = null) {
     const idx = args.indexOf(flag);
@@ -530,39 +674,150 @@ async function main() {
 
   if (command === '--help' || command === '-h' || command === 'help') {
     console.log(`
+=======================================================
+ ⚡ UltronChat Developer CLI (Node.js)
+=======================================================
 Usage:
-  node ultron.mjs create <room_code> [--key secret] [--server http://localhost:3000] [--dir ./ultron]
-  node ultron.mjs join <room_code>   [--key secret] [--server http://localhost:3000] [--dir ./ultron]
-  node ultron.mjs (interactive menu)
-
-Commands:
-  create <room_code>  Create and host a new P2P room (e.g. 4567)
-  join <room_code>    Join an existing room as a guest peer
+  npx ultron                     Read ultron.json or launch setup wizard
+  npx ultron create [room_code]  Create a room and save to ultron.json
+  npx ultron join <room_code>    Join an existing room and save to ultron.json
+  npx ultron send <file_path>    Send a file using active ultron.json room
+  npx ultron status              Display ultron.json config and room state
+  npx ultron reset               Remove local ultron.json configuration
 
 Options:
-  --key <secret>      Optional room authorization key / password
-  --server <url>      Signaling server URL (default: http://localhost:3000)
-  --dir <path>        Directory to automatically save received files (default: ./ultron)
-  --name <string>     Custom developer handle name
-  --help, -h          Show this help message
+  --key <secret>                 Optional room authorization key / password
+  --server <url>                 Signaling server URL (default: https://ultronchat.vercel.app)
+  --dir <path>                   Directory to save received files (default: ./ultron)
+  --name <string>                Custom developer nickname
+  --no-save                      Do not persist configuration to ultron.json
+  --help, -h                     Show this help message
 `);
-    process.exit(0);
+    return;
   }
 
-  if (command === 'create' || command === 'join') {
-    const roomCode = args[1];
-    if (!roomCode) {
-      console.error(`Usage: node ultron.mjs ${command} <room_code> [--key secret]`);
+  // Command: reset / clean
+  if (command === 'reset' || command === 'clean') {
+    const removed = removeUltronConfig();
+    if (removed) {
+      console.log(`[Ultron] Successfully removed local ultron.json.`);
+    } else {
+      console.log(`[Ultron] No ultron.json found in current directory.`);
+    }
+    return;
+  }
+
+  // Command: status / config
+  if (command === 'status' || command === 'config') {
+    const existing = findUltronConfig(getArg('--config'));
+    if (!existing) {
+      console.log(`[Ultron] No ultron.json found in current directory or ancestors.`);
+      console.log(`Run 'npx ultron' or 'npx ultron create' to configure a room.`);
       process.exit(1);
     }
+    console.log(`\n=======================================================`);
+    console.log(` ⚡ UltronChat Config (${existing.path})`);
+    console.log(`=======================================================`);
+    console.log(JSON.stringify(existing.config, null, 2));
+
+    // Check room connectivity
+    try {
+      const serverUrl = existing.config.serverUrl || DEFAULT_SERVER;
+      const res = await fetch(`${serverUrl}/api/signal/registry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'lookup', roomCode: existing.config.roomCode }),
+      });
+      const data = await res.json();
+      console.log(`\n[Ultron] Room Status: ${data.active ? '🟢 ACTIVE' : '⚪ IDLE / EXPIRED'} (${data.peers?.length || 0} peers online)`);
+    } catch (err) {
+      console.log(`\n[Ultron] Could not reach server: ${err.message}`);
+    }
+    return;
+  }
+
+  // Command: send <file> (one-shot transfer using ultron.json or flags)
+  if (command === 'send') {
+    const filePath = args[1];
+    if (!filePath) {
+      console.error(`Usage: npx ultron send <file_path> [--room code] [--server url]`);
+      process.exit(1);
+    }
+    if (!fs.existsSync(filePath)) {
+      console.error(`Error: File not found: ${filePath}`);
+      process.exit(1);
+    }
+
+    const existing = findUltronConfig(getArg('--config'));
+    const roomCode = getArg('--room') || existing?.config?.roomCode;
+    if (!roomCode) {
+      console.error(`Error: No active room. Run 'npx ultron' to create/join a room first, or pass --room <code>.`);
+      process.exit(1);
+    }
+
+    const serverUrl = getArg('--server') || existing?.config?.serverUrl || DEFAULT_SERVER;
+    const authKey = getArg('--key') || existing?.config?.authKey || null;
+
+    console.log(`[Ultron] Sending ${filePath} to room ${roomCode}...`);
+    const client = new UltronClient({
+      roomCode,
+      isHost: false,
+      authKey,
+      serverUrl,
+      saveDir: existing?.config?.saveDir || DEFAULT_SAVE_DIR,
+      peerName: `Sender-${Date.now() % 10000}`,
+    });
+
+    try {
+      await client.connect();
+      console.log(`[Ultron] Connected. Waiting 1.5s for room peers...`);
+      await new Promise((r) => setTimeout(r, 1500));
+      await client.sendFile(filePath);
+      console.log(`[Ultron] File transfer initiated. Finalizing in 2s...`);
+      await new Promise((r) => setTimeout(r, 2000));
+      await client.leave();
+      console.log(`[Ultron] Transfer complete.`);
+      process.exit(0);
+    } catch (err) {
+      console.error(`[Ultron] Transfer failed: ${err.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Command: create or join with optional CLI args
+  if (command === 'create' || command === 'join' || command === 'connect') {
+    let roomCode = args[1];
+    const isHost = command === 'create';
+    const noSave = args.includes('--no-save');
+
+    if (!roomCode && isHost) {
+      roomCode = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+    } else if (!roomCode) {
+      console.error(`Usage: npx ultron ${command} <room_code> [--key secret]`);
+      process.exit(1);
+    }
+
     const authKey = getArg('--key');
     const serverUrl = getArg('--server', DEFAULT_SERVER);
     const saveDir = getArg('--dir', DEFAULT_SAVE_DIR);
     const peerName = getArg('--name');
 
+    if (!noSave) {
+      saveUltronConfig({
+        roomCode,
+        isHost,
+        authKey,
+        serverUrl,
+        saveDir,
+        peerName,
+      });
+      console.log(`[Ultron] Saved room configuration to ultron.json.`);
+    }
+
     const client = new UltronClient({
       roomCode,
-      isHost: command === 'create',
+      isHost,
       authKey,
       serverUrl,
       saveDir,
@@ -579,7 +834,63 @@ Options:
     return;
   }
 
-  // Interactive Prompt
+  // -----------------------------------------------------------
+  // Default interactive mode: Check ultron.json first!
+  // -----------------------------------------------------------
+  const existingConfig = findUltronConfig(getArg('--config'));
+
+  if (existingConfig && !args.includes('--new')) {
+    const cfg = existingConfig.config;
+    console.log('='.repeat(55));
+    console.log(' ⚡ UltronChat Developer CLI');
+    console.log('='.repeat(55));
+    console.log(`[Ultron] Found config: ${existingConfig.path}`);
+    console.log(`  • Room Code : ${cfg.roomCode}`);
+    console.log(`  • Role      : ${cfg.role ? cfg.role.toUpperCase() : (cfg.isHost ? 'HOST' : 'PEER')}`);
+    console.log(`  • Server    : ${cfg.serverUrl || DEFAULT_SERVER}`);
+    console.log(`  • Save Dir  : ${cfg.saveDir || DEFAULT_SAVE_DIR} (all received files auto-saved here)`);
+    console.log(`  • Dev Name  : ${cfg.peerName || 'Default'}`);
+
+    // Ensure .gitignore protection
+    ensureGitignore(CONFIG_FILE_NAME, cfg.saveDir || DEFAULT_SAVE_DIR);
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const question = (prompt) => new Promise((res) => rl.question(prompt, res));
+
+    const answer = (await question(`\nConnect to this room now? [Y/n] (or type 'new' to reconfigure): `)).trim().toLowerCase();
+    rl.close();
+
+    if (answer === 'new') {
+      // Fall through to wizard below
+    } else if (answer === 'n' || answer === 'no') {
+      console.log(`[Ultron] Session cancelled.`);
+      process.exit(0);
+    } else {
+      // Connect with existing ultron.json!
+      const client = new UltronClient({
+        roomCode: cfg.roomCode,
+        isHost: Boolean(cfg.isHost),
+        authKey: cfg.authKey,
+        serverUrl: cfg.serverUrl || DEFAULT_SERVER,
+        saveDir: cfg.saveDir || DEFAULT_SAVE_DIR,
+        peerName: cfg.peerName,
+      });
+
+      try {
+        await client.connect();
+        await runInteractiveCli(client);
+      } catch (err) {
+        console.error(`\n[Ultron] Connection error: ${err.message}`);
+        console.log(`Tip: If the room expired, run 'npx ultron reset' and start a new room.`);
+        process.exit(1);
+      }
+      return;
+    }
+  }
+
+  // -----------------------------------------------------------
+  // Interactive Wizard (No ultron.json found or user requested 'new')
+  // -----------------------------------------------------------
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -590,27 +901,52 @@ Options:
   console.log('='.repeat(55));
   console.log(' ⚡ UltronChat Developer Setup (Node.js)');
   console.log('='.repeat(55));
+  console.log(`[Ultron] No ultron.json configuration active in current directory.`);
+  console.log(`Let's configure your P2P room connection.\n`);
 
-  const choice = (await question('Do you want to (1) Create a room or (2) Join a room? [1/2]: ')).trim();
+  const choice = (await question('Do you want to (1) Create a new room or (2) Connect/Join an existing room? [1/2]: ')).trim();
   const isHost = choice === '1';
-  const roomCode = (await question('Enter Room Code (e.g. 4567): ')).trim().toUpperCase();
+
+  let defaultRoom = isHost ? `ROOM-${Math.floor(1000 + Math.random() * 9000)}` : '4567';
+  const roomPrompt = isHost
+    ? `Enter Room Code (e.g. 4567, or press Enter for ${defaultRoom}): `
+    : `Enter Room Code to connect to (e.g. 4567): `;
+
+  let roomCode = (await question(roomPrompt)).trim().toUpperCase();
   if (!roomCode) {
-    console.error('Error: Room code is required.');
-    rl.close();
-    process.exit(1);
+    if (isHost) {
+      roomCode = defaultRoom;
+    } else {
+      console.error('Error: Room code is required to join.');
+      rl.close();
+      process.exit(1);
+    }
   }
-  const authKey = (await question('Enter Auth Key (optional, press Enter to skip): ')).trim() || null;
-  const peerName = (await question('Enter your Dev Name (optional): ')).trim() || null;
+
+  const authKey = (await question('Enter Auth Key / Password (optional, press Enter to skip): ')).trim() || null;
+  const peerName = (await question(`Enter your Dev Name (optional, default: NodeDev-${roomCode.slice(-4)}): `)).trim() || null;
   const saveDir = (await question('Save received files to [default: ./ultron]: ')).trim() || DEFAULT_SAVE_DIR;
+  const serverUrl = (await question(`Signaling server [default: ${DEFAULT_SERVER}]: `)).trim() || DEFAULT_SERVER;
 
   rl.close();
+
+  // Save ultron.json and ensure .gitignore
+  const saved = saveUltronConfig({
+    roomCode,
+    isHost,
+    authKey,
+    peerName,
+    serverUrl,
+    saveDir,
+  });
+  console.log(`\n[Ultron] Created ${saved.path}`);
 
   const client = new UltronClient({
     roomCode,
     isHost,
     authKey,
     peerName,
-    serverUrl: DEFAULT_SERVER,
+    serverUrl,
     saveDir,
   });
 
@@ -623,7 +959,7 @@ Options:
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith('ultron.mjs')) {
+if (process.argv[1] && (process.argv[1].endsWith('ultron.mjs') || process.argv[1].endsWith('ultron'))) {
   main().catch((err) => {
     console.error('[Ultron] Fatal:', err);
     process.exit(1);

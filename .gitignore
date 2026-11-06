@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 ultron/
+
+# UltronChat transient P2P room config & downloaded files
+ultron.json

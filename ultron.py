@@ -12,18 +12,155 @@ Usage:
 
 import sys
 import os
+
+# Ensure safe UTF-8 output on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import time
 import json
 import base64
 import hashlib
 import argparse
 import threading
+import subprocess
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
-DEFAULT_SERVER = os.environ.get("ULTRON_SERVER_URL", "http://localhost:3000")
+CONFIG_FILE_NAME = "ultron.json"
+DEFAULT_SERVER = os.environ.get("ULTRON_SERVER_URL", "https://ultronchat.vercel.app")
 DEFAULT_SAVE_DIR = os.environ.get("ULTRON_SAVE_DIR", "./ultron")
 CHUNK_SIZE_BYTES = 24 * 1024  # 24 KB chunk size for reliable JSON framing
+
+
+def ensure_gitignore(config_name: str = CONFIG_FILE_NAME, save_dir: str = DEFAULT_SAVE_DIR) -> bool:
+    """Checks if current directory or ancestor is a Git repo. If so, ensures ultron.json and save_dir are in .gitignore."""
+    try:
+        is_git = False
+        git_root = None
+
+        curr = os.getcwd()
+        while curr:
+            if os.path.isdir(os.path.join(curr, ".git")):
+                is_git = True
+                git_root = curr
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+
+        if not is_git:
+            try:
+                out = subprocess.check_output(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                ).strip()
+                if out:
+                    is_git = True
+                    git_root = out
+            except Exception:
+                return False
+
+        if not is_git or not git_root:
+            return False
+
+        gitignore_path = os.path.join(git_root, ".gitignore")
+        content = ""
+        if os.path.isfile(gitignore_path):
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+        rel_save = os.path.relpath(os.path.abspath(save_dir), git_root).replace("\\", "/")
+        save_pattern = rel_save if rel_save.endswith("/") else f"{rel_save}/"
+
+        to_add = []
+        if config_name not in content:
+            to_add.append(config_name)
+        if save_pattern not in content and "ultron/" not in content:
+            to_add.append(save_pattern)
+
+        if to_add:
+            prefix = "\n" if (content and not content.endswith("\n")) else ""
+            addition = f"{prefix}\n# UltronChat transient P2P room config & downloaded files\n" + "\n".join(to_add) + "\n"
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(addition)
+            print(f"[Ultron] Protected: Added {', '.join(to_add)} to .gitignore")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def find_ultron_config(custom_path: str = None) -> dict | None:
+    """Locate existing ultron.json in current directory or parent directories."""
+    if custom_path:
+        resolved = os.path.abspath(custom_path)
+        if os.path.isfile(resolved):
+            try:
+                with open(resolved, "r", encoding="utf-8") as f:
+                    return {"path": resolved, "config": json.load(f)}
+            except Exception as e:
+                print(f"[Ultron] Warning: Could not parse {resolved}: {e}")
+                return None
+        return None
+
+    curr = os.getcwd()
+    while curr:
+        candidate = os.path.join(curr, CONFIG_FILE_NAME)
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    return {"path": candidate, "config": json.load(f)}
+            except Exception as e:
+                print(f"[Ultron] Warning: Could not parse {candidate}: {e}")
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
+    return None
+
+
+def save_ultron_config(config: dict, file_path: str = CONFIG_FILE_NAME) -> dict:
+    """Save configuration to ultron.json and ensure .gitignore protection."""
+    resolved = os.path.abspath(file_path)
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    data = {
+        "$schema": "https://ultronchat.vercel.app/schemas/ultron.json",
+        "roomCode": str(config.get("roomCode") or config.get("room_code", "")).strip().upper(),
+        "role": "host" if config.get("isHost") or config.get("is_host") else "peer",
+        "isHost": bool(config.get("isHost") or config.get("is_host")),
+        "serverUrl": config.get("serverUrl") or config.get("server_url") or DEFAULT_SERVER,
+        "saveDir": config.get("saveDir") or config.get("save_dir") or DEFAULT_SAVE_DIR,
+        "authKey": (config.get("authKey") or config.get("auth_key") or "").strip() or None,
+        "peerName": config.get("peerName") or config.get("peer_name") or None,
+        "autoDownload": config.get("autoDownload", True),
+        "createdAt": config.get("createdAt") or now_iso,
+        "lastConnectedAt": now_iso,
+    }
+    with open(resolved, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    ensure_gitignore(CONFIG_FILE_NAME, data["saveDir"])
+    return {"path": resolved, "config": data}
+
+
+def remove_ultron_config(file_path: str = CONFIG_FILE_NAME) -> bool:
+    """Remove local ultron.json config."""
+    resolved = os.path.abspath(file_path)
+    if os.path.isfile(resolved):
+        os.remove(resolved)
+        return True
+    return False
 
 
 class UltronClient:
@@ -458,11 +595,12 @@ def main():
 
     # 'create' command
     create_parser = subparsers.add_parser("create", help="Create a new transfer room")
-    create_parser.add_argument("room_code", help="Room code (e.g. 4567)")
+    create_parser.add_argument("room_code", nargs="?", default=None, help="Room code (e.g. 4567)")
     create_parser.add_argument("--key", default=None, help="Optional auth key / password")
     create_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
     create_parser.add_argument("--dir", default=DEFAULT_SAVE_DIR, help="Directory to save received files")
     create_parser.add_argument("--name", default=None, help="Your developer display name")
+    create_parser.add_argument("--no-save", action="store_true", help="Do not persist to ultron.json")
 
     # 'join' command
     join_parser = subparsers.add_parser("join", help="Join an existing room")
@@ -471,50 +609,114 @@ def main():
     join_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
     join_parser.add_argument("--dir", default=DEFAULT_SAVE_DIR, help="Directory to save received files")
     join_parser.add_argument("--name", default=None, help="Your developer display name")
+    join_parser.add_argument("--no-save", action="store_true", help="Do not persist to ultron.json")
 
     # 'send' quick command
     send_parser = subparsers.add_parser("send", help="Quickly send a file into a room")
     send_parser.add_argument("file_path", help="Path to file to send")
-    send_parser.add_argument("--room", required=True, help="Room code (e.g. 4567)")
+    send_parser.add_argument("--room", default=None, help="Room code (e.g. 4567, defaults to ultron.json)")
     send_parser.add_argument("--key", default=None, help="Optional auth key / password")
     send_parser.add_argument("--server", default=DEFAULT_SERVER, help="Server URL")
 
+    # 'status' command
+    subparsers.add_parser("status", help="Show active ultron.json configuration and status")
+
+    # 'reset' command
+    subparsers.add_parser("reset", help="Remove local ultron.json configuration")
+
     args = parser.parse_args()
 
-    # If no command provided, show interactive prompt
-    if not args.command:
-        print("=" * 55)
-        print(" ⚡ UltronChat Developer Setup")
-        print("=" * 55)
-        choice = input("Do you want to (1) Create a room or (2) Join a room? [1/2]: ").strip()
-        is_host = choice == "1"
-        code = input("Enter Room Code (e.g. 4567): ").strip().upper()
-        if not code:
-            print("Error: Room code is required.")
+    # Command: reset
+    if args.command in ("reset", "clean"):
+        if remove_ultron_config():
+            print("[Ultron] Successfully removed local ultron.json.")
+        else:
+            print("[Ultron] No ultron.json found in current directory.")
+        sys.exit(0)
+
+    # Command: status
+    if args.command in ("status", "config"):
+        existing = find_ultron_config()
+        if not existing:
+            print("[Ultron] No ultron.json found in current directory or ancestors.")
+            print("Run 'python ultron.py' or 'python ultron.py create' to configure a room.")
             sys.exit(1)
-        auth = input("Enter Auth Key (optional, press Enter to skip): ").strip() or None
-        name = input("Enter your Dev Name (optional): ").strip() or None
-        save_folder = input("Save received files to [default: ./ultron]: ").strip() or DEFAULT_SAVE_DIR
+        print("\n" + "=" * 55)
+        print(f" ⚡ UltronChat Config ({existing['path']})")
+        print("=" * 55)
+        print(json.dumps(existing["config"], indent=2))
+        server = existing["config"].get("serverUrl", DEFAULT_SERVER)
+        code = existing["config"].get("roomCode", "")
+        try:
+            req = Request(
+                f"{server}/api/signal/registry",
+                data=json.dumps({"action": "lookup", "roomCode": code}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                status_str = "🟢 ACTIVE" if data.get("active") else "⚪ IDLE / EXPIRED"
+                peer_cnt = len(data.get("peers", []))
+                print(f"\n[Ultron] Room Status: {status_str} ({peer_cnt} peers online)")
+        except HTTPError as he:
+            if he.code == 404:
+                print(f"\n[Ultron] Room Status: ⚪ IDLE / NOT CREATED YET (0 peers online)")
+            else:
+                print(f"\n[Ultron] Server returned HTTP {he.code}")
+        except Exception as e:
+            print(f"\n[Ultron] Server check failed: {e}")
+        sys.exit(0)
+
+    # Command: send
+    if args.command == "send":
+        existing = find_ultron_config()
+        room_code = args.room or (existing and existing["config"].get("roomCode"))
+        if not room_code:
+            print("Error: No active room. Pass --room <code> or configure ultron.json first.")
+            sys.exit(1)
+        if not os.path.isfile(args.file_path):
+            print(f"Error: File not found: {args.file_path}")
+            sys.exit(1)
+
+        server_url = args.server or (existing and existing["config"].get("serverUrl")) or DEFAULT_SERVER
+        auth_key = args.key or (existing and existing["config"].get("authKey")) or None
 
         client = UltronClient(
-            room_code=code,
-            is_host=is_host,
-            auth_key=auth,
-            peer_name=name,
-            server_url=DEFAULT_SERVER,
-            save_dir=save_folder,
+            room_code=room_code,
+            is_host=False,
+            auth_key=auth_key,
+            server_url=server_url,
         )
         try:
+            print(f"[Ultron] Connecting to room {room_code}...")
             client.connect()
-            run_interactive_repl(client)
+            time.sleep(1.5)
+            client.send_file(args.file_path)
+            time.sleep(2)
+            client.leave()
+            print("[Ultron] File sent successfully.")
+            sys.exit(0)
         except Exception as e:
-            print(f"\n[Ultron] Connection Error: {e}")
+            print(f"\n[Ultron] Send Error: {e}")
             sys.exit(1)
-        return
 
+    # Command: create
     if args.command == "create":
+        room_code = args.room_code or f"ROOM-{int(time.time() * 1000) % 9000 + 1000}"
+        if not getattr(args, "no_save", False):
+            save_ultron_config({
+                "roomCode": room_code,
+                "isHost": True,
+                "authKey": args.key,
+                "peerName": args.name,
+                "serverUrl": args.server,
+                "saveDir": args.dir,
+            })
+            print(f"[Ultron] Saved configuration to ultron.json.")
+
         client = UltronClient(
-            room_code=args.room_code,
+            room_code=room_code,
             is_host=True,
             auth_key=args.key,
             peer_name=args.name,
@@ -527,8 +729,21 @@ def main():
         except Exception as e:
             print(f"\n[Ultron] Error: {e}")
             sys.exit(1)
+        return
 
-    elif args.command == "join":
+    # Command: join
+    if args.command == "join":
+        if not getattr(args, "no_save", False):
+            save_ultron_config({
+                "roomCode": args.room_code,
+                "isHost": False,
+                "authKey": args.key,
+                "peerName": args.name,
+                "serverUrl": args.server,
+                "saveDir": args.dir,
+            })
+            print(f"[Ultron] Saved configuration to ultron.json.")
+
         client = UltronClient(
             room_code=args.room_code,
             is_host=False,
@@ -543,23 +758,105 @@ def main():
         except Exception as e:
             print(f"\n[Ultron] Error: {e}")
             sys.exit(1)
+        return
 
-    elif args.command == "send":
-        client = UltronClient(
-            room_code=args.room,
-            is_host=False,
-            auth_key=args.key,
-            server_url=args.server,
-        )
+    # Default: Interactive mode. First, look for ultron.json!
+    existing = find_ultron_config()
+    if existing:
+        cfg = existing["config"]
+        print("=" * 55)
+        print(" ⚡ UltronChat Developer CLI (Python)")
+        print("=" * 55)
+        print(f"[Ultron] Found config: {existing['path']}")
+        print(f"  • Room Code : {cfg.get('roomCode')}")
+        print(f"  • Role      : {cfg.get('role', 'peer').upper()}")
+        print(f"  • Server    : {cfg.get('serverUrl', DEFAULT_SERVER)}")
+        print(f"  • Save Dir  : {cfg.get('saveDir', DEFAULT_SAVE_DIR)} (files auto-saved here)")
+        print(f"  • Dev Name  : {cfg.get('peerName') or 'Default'}")
+
+        ensure_gitignore(CONFIG_FILE_NAME, cfg.get("saveDir", DEFAULT_SAVE_DIR))
+
         try:
-            client.connect()
-            time.sleep(1)
-            client.send_file(args.file_path)
-            time.sleep(1)
-            client.leave()
-        except Exception as e:
-            print(f"\n[Ultron] Error: {e}")
+            ans = input("\nConnect to this room now? [Y/n] (or type 'new' to reconfigure): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting.")
+            sys.exit(0)
+
+        if ans in ("n", "no"):
+            print("[Ultron] Session cancelled.")
+            sys.exit(0)
+        elif ans != "new":
+            client = UltronClient(
+                room_code=cfg.get("roomCode"),
+                is_host=bool(cfg.get("isHost")),
+                auth_key=cfg.get("authKey"),
+                peer_name=cfg.get("peerName"),
+                server_url=cfg.get("serverUrl", DEFAULT_SERVER),
+                save_dir=cfg.get("saveDir", DEFAULT_SAVE_DIR),
+            )
+            try:
+                client.connect()
+                run_interactive_repl(client)
+            except Exception as e:
+                print(f"\n[Ultron] Connection Error: {e}")
+                sys.exit(1)
+            return
+
+    # No ultron.json found (or user typed 'new'): Run Setup Wizard
+    print("=" * 55)
+    print(" ⚡ UltronChat Developer Setup (Python)")
+    print("=" * 55)
+    print("[Ultron] No ultron.json configuration found.")
+    print("Let's configure your P2P room session.\n")
+
+    try:
+        choice = input("Do you want to (1) Create a room or (2) Join a room? [1/2]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting.")
+        sys.exit(0)
+
+    is_host = choice == "1"
+    default_room = f"ROOM-{int(time.time() * 1000) % 9000 + 1000}" if is_host else "4567"
+    prompt_str = f"Enter Room Code (e.g. 4567, or Enter for {default_room}): " if is_host else "Enter Room Code to connect to (e.g. 4567): "
+
+    try:
+        code = input(prompt_str).strip().upper() or (default_room if is_host else "")
+        if not code:
+            print("Error: Room code is required.")
             sys.exit(1)
+        auth = input("Enter Auth Key / Password (optional, press Enter to skip): ").strip() or None
+        name = input("Enter your Dev Name (optional): ").strip() or None
+        save_folder = input("Save received files to [default: ./ultron]: ").strip() or DEFAULT_SAVE_DIR
+        server_val = input(f"Signaling server [default: {DEFAULT_SERVER}]: ").strip() or DEFAULT_SERVER
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting.")
+        sys.exit(0)
+
+    # Save ultron.json and ensure .gitignore
+    saved = save_ultron_config({
+        "roomCode": code,
+        "isHost": is_host,
+        "authKey": auth,
+        "peerName": name,
+        "serverUrl": server_val,
+        "saveDir": save_folder,
+    })
+    print(f"\n[Ultron] Created {saved['path']}")
+
+    client = UltronClient(
+        room_code=code,
+        is_host=is_host,
+        auth_key=auth,
+        peer_name=name,
+        server_url=server_val,
+        save_dir=save_folder,
+    )
+    try:
+        client.connect()
+        run_interactive_repl(client)
+    except Exception as e:
+        print(f"\n[Ultron] Connection Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
