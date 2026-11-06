@@ -106,3 +106,4 @@ if [ "$LINK_CREATED" = false ]; then
     echo "or restart your terminal."
 fi
 echo ""
+

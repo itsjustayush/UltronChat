@@ -85,3 +85,4 @@ Write-Host "  ultron send ./my-dataset.zip       # Send a file to connected peer
 Write-Host "  ultron status                      # Check active room and peers" -ForegroundColor Yellow
 Write-Host "  ultron reset                       # Remove local ultron.json config" -ForegroundColor Yellow
 Write-Host ""
+
