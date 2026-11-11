@@ -6,7 +6,7 @@ export interface UserSession {
   identifier: string;
   authenticated: boolean;
   nodeType: string; // e.g. 'EPH_NODE_0.4.2'
-  encryptionAlgorithm: 'AES-256-GCM';
+  encryptionAlgorithm: 'WEBRTC-DTLS-1.3' | 'AES-256-GCM';
 }
 
 export interface Peer {

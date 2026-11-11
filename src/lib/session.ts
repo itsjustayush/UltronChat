@@ -14,7 +14,7 @@ export function getOrCreateGuestSession(): UserSession {
       identifier: 'Guest-0000',
       authenticated: false,
       nodeType: 'EPH_NODE_0.5.0',
-      encryptionAlgorithm: 'AES-256-GCM',
+      encryptionAlgorithm: 'WEBRTC-DTLS-1.3',
     };
   }
 
@@ -44,7 +44,7 @@ export function getOrCreateGuestSession(): UserSession {
     identifier: nickname,
     authenticated: false,
     nodeType: 'EPH_NODE_0.5.0',
-    encryptionAlgorithm: 'AES-256-GCM',
+    encryptionAlgorithm: 'WEBRTC-DTLS-1.3',
   };
 
   sessionStorage.setItem(GUEST_SESSION_KEY, JSON.stringify(session));

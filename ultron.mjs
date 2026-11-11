@@ -15,6 +15,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import os from 'node:os';
 import readline from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { execSync } from 'node:child_process';
@@ -23,6 +25,20 @@ const CONFIG_FILE_NAME = 'ultron.json';
 const DEFAULT_SERVER = process.env.ULTRON_SERVER_URL || 'https://ultronchat.vercel.app';
 const DEFAULT_SAVE_DIR = process.env.ULTRON_SAVE_DIR || './ultron';
 const CHUNK_SIZE_BYTES = 24 * 1024; // 24 KB chunk size
+
+export function getLocalIpAddresses() {
+  const ips = [];
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (!iface.internal && iface.family === 'IPv4') {
+        ips.push(iface.address);
+      }
+    }
+  }
+  if (ips.length === 0) ips.push('127.0.0.1');
+  return ips;
+}
 
 /**
  * Checks if current directory or any ancestor is a Git repo.
@@ -210,6 +226,7 @@ export class UltronClient extends EventEmitter {
     this.peerId = `dev-js-${Date.now() % 100000}-${crypto.randomBytes(2).toString('hex')}`;
     this.peerName = options.peerName || `NodeDev-${this.peerId.slice(-4)}`;
 
+    this.autoAccept = Boolean(options.autoAccept);
     this.running = false;
     this.connected = false;
     this.peers = [];
@@ -327,20 +344,40 @@ export class UltronClient extends EventEmitter {
         senderName: data.senderName || sender,
         text: data.text,
       });
+
+      if (data.fileOffer && sender !== this.peerId) {
+        this._handleDirectFileOffer(sender, data.fileOffer);
+      }
     } else if (eventType === 'file_start') {
       const fileInfo = data.file || {};
       const token = fileInfo.transferToken || fileInfo.id;
       const totalChunks = Number(fileInfo.totalChunks || 0);
-      const fileName = path.basename(fileInfo.name || 'downloaded_file');
+      const rawFileName = fileInfo.name || 'downloaded_file';
+      const safeName = path.basename(rawFileName).replace(/[^a-zA-Z0-9._-]/g, '_');
       const fileSize = Number(fileInfo.size || 0);
       const expectedSha256 = fileInfo.sha256 || '';
 
+      let savePath = path.join(this.saveDir, safeName);
+      const ext = path.extname(safeName);
+      const base = path.basename(safeName, ext);
+      let counter = 1;
+      while (fs.existsSync(savePath)) {
+        savePath = path.join(this.saveDir, `${base}_${counter}${ext}`);
+        counter += 1;
+      }
+      const partPath = `${savePath}.part-${Date.now()}`;
+      const writeStream = fs.createWriteStream(partPath, { flags: 'w' });
+      const hasher = crypto.createHash('sha256');
+
       this.incomingTransfers.set(token, {
-        name: fileName,
+        name: safeName,
+        savePath,
+        partPath,
+        writeStream,
+        hasher,
         size: fileSize,
         totalChunks,
         expectedSha256,
-        chunks: new Array(totalChunks).fill(null),
         receivedChunks: 0,
         receivedBytes: 0,
         sender,
@@ -348,7 +385,7 @@ export class UltronClient extends EventEmitter {
       });
 
       this.emit('file_start', {
-        fileName,
+        fileName: safeName,
         fileSize,
         totalChunks,
         sender,
@@ -362,77 +399,192 @@ export class UltronClient extends EventEmitter {
       const transfer = this.incomingTransfers.get(token);
       if (!transfer || index >= transfer.totalChunks) return;
 
-      if (transfer.chunks[index] === null) {
-        const rawChunk = Buffer.from(payloadB64, 'base64');
-        transfer.chunks[index] = rawChunk;
-        transfer.receivedChunks += 1;
-        transfer.receivedBytes += rawChunk.length;
+      const rawChunk = Buffer.from(payloadB64, 'base64');
+      transfer.writeStream.write(rawChunk);
+      transfer.hasher.update(rawChunk);
+      transfer.receivedChunks += 1;
+      transfer.receivedBytes += rawChunk.length;
 
-        this.emit('file_progress', {
-          token,
-          fileName: transfer.name,
-          receivedChunks: transfer.receivedChunks,
-          totalChunks: transfer.totalChunks,
-          receivedBytes: transfer.receivedBytes,
-          totalBytes: transfer.size,
-          percent: Math.round((transfer.receivedChunks / transfer.totalChunks) * 100),
-        });
-      }
+      this.emit('file_progress', {
+        token,
+        fileName: transfer.name,
+        receivedChunks: transfer.receivedChunks,
+        totalChunks: transfer.totalChunks,
+        receivedBytes: transfer.receivedBytes,
+        totalBytes: transfer.size,
+        percent: Math.round((transfer.receivedChunks / transfer.totalChunks) * 100),
+      });
     } else if (eventType === 'file_end') {
       const token = data.transferToken || data.fileId;
       const transfer = this.incomingTransfers.get(token);
       if (!transfer) return;
       this.incomingTransfers.delete(token);
 
-      // Verify completeness
-      if (
-        transfer.receivedChunks !== transfer.totalChunks ||
-        transfer.chunks.some((c) => c === null)
-      ) {
-        this.emit('file_error', {
-          token,
+      transfer.writeStream.end(() => {
+        // Verify completeness
+        if (transfer.receivedChunks !== transfer.totalChunks) {
+          try { fs.unlinkSync(transfer.partPath); } catch {}
+          this.emit('file_error', {
+            token,
+            fileName: transfer.name,
+            error: 'Transfer ended before all chunks arrived.',
+          });
+          return;
+        }
+
+        const actualSha256 = transfer.hasher.digest('hex');
+        if (
+          transfer.expectedSha256 &&
+          actualSha256.toLowerCase() !== transfer.expectedSha256.toLowerCase()
+        ) {
+          try { fs.unlinkSync(transfer.partPath); } catch {}
+          this.emit('file_error', {
+            token,
+            fileName: transfer.name,
+            error: 'SHA-256 integrity verification failed! Discarding file.',
+          });
+          return;
+        }
+
+        // Atomically rename .part file to final destination
+        try {
+          fs.renameSync(transfer.partPath, transfer.savePath);
+        } catch (err) {
+          this.emit('file_error', {
+            token,
+            fileName: transfer.name,
+            error: `Failed to finalize file: ${err.message}`,
+          });
+          return;
+        }
+
+        this.emit('file_saved', {
           fileName: transfer.name,
-          error: 'Transfer ended before all chunks arrived.',
+          filePath: transfer.savePath,
+          size: transfer.receivedBytes,
+          sha256: actualSha256,
+          sender: transfer.sender,
         });
-        return;
-      }
-
-      // Reassemble buffer and compute SHA-256
-      const fileBuffer = Buffer.concat(transfer.chunks);
-      const actualSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-
-      if (
-        transfer.expectedSha256 &&
-        actualSha256.toLowerCase() !== transfer.expectedSha256.toLowerCase()
-      ) {
-        this.emit('file_error', {
-          token,
-          fileName: transfer.name,
-          error: 'SHA-256 integrity verification failed! Discarding file.',
-        });
-        return;
-      }
-
-      // Save automatically into ./ultron folder
-      let savePath = path.join(this.saveDir, transfer.name);
-      const ext = path.extname(transfer.name);
-      const base = path.basename(transfer.name, ext);
-      let counter = 1;
-      while (fs.existsSync(savePath)) {
-        savePath = path.join(this.saveDir, `${base}_${counter}${ext}`);
-        counter += 1;
-      }
-
-      fs.writeFileSync(savePath, fileBuffer);
-
-      this.emit('file_saved', {
-        fileName: transfer.name,
-        filePath: savePath,
-        size: fileBuffer.length,
-        sha256: actualSha256,
-        sender: transfer.sender,
       });
     }
+  }
+
+  async _handleDirectFileOffer(sender, offer) {
+    if (sender === this.peerId) return;
+    const { fileName, fileSize, url } = offer;
+    if (!url || !fileName) return;
+
+    if (!this.autoAccept) {
+      this.emit('file_confirm', {
+        sender,
+        fileName,
+        fileSize,
+        sha256: offer.sha256,
+        accept: () => this._downloadDirectFile(sender, offer),
+      });
+      return;
+    }
+
+    await this._downloadDirectFile(sender, offer);
+  }
+
+  async _downloadDirectFile(sender, offer) {
+    const { fileName, fileSize, sha256, url, transferToken } = offer;
+    const safeName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+    let savePath = path.join(this.saveDir, safeName);
+    const ext = path.extname(safeName);
+    const base = path.basename(safeName, ext);
+    let counter = 1;
+    while (fs.existsSync(savePath)) {
+      savePath = path.join(this.saveDir, `${base}_${counter}${ext}`);
+      counter += 1;
+    }
+
+    const partPath = `${savePath}.part-${Date.now()}`;
+    const writeStream = fs.createWriteStream(partPath);
+    const hasher = crypto.createHash('sha256');
+    let receivedBytes = 0;
+
+    this.emit('file_start', {
+      fileName: safeName,
+      fileSize,
+      sender,
+    });
+
+    const parsedUrl = new URL(url);
+    const getOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'GET',
+      headers: { 'User-Agent': 'Ultron-CLI/1.0' },
+    };
+
+    const req = http.request(getOptions, (res) => {
+      if (res.statusCode !== 200) {
+        try { fs.unlinkSync(partPath); } catch {}
+        this.emit('file_error', {
+          fileName: safeName,
+          error: `HTTP download failed with status ${res.statusCode}`,
+        });
+        return;
+      }
+
+      res.on('data', (chunk) => {
+        receivedBytes += chunk.length;
+        writeStream.write(chunk);
+        hasher.update(chunk);
+        this.emit('file_progress', {
+          token: transferToken,
+          fileName: safeName,
+          receivedBytes,
+          totalBytes: fileSize,
+          percent: fileSize > 0 ? Math.min(100, Math.round((receivedBytes / fileSize) * 100)) : 100,
+        });
+      });
+
+      res.on('end', () => {
+        writeStream.end(() => {
+          const actualSha256 = hasher.digest('hex');
+          if (sha256 && actualSha256.toLowerCase() !== sha256.toLowerCase()) {
+            try { fs.unlinkSync(partPath); } catch {}
+            this.emit('file_error', {
+              fileName: safeName,
+              error: 'SHA-256 integrity verification failed! Discarding file.',
+            });
+            return;
+          }
+
+          try {
+            fs.renameSync(partPath, savePath);
+          } catch (err) {
+            this.emit('file_error', {
+              fileName: safeName,
+              error: `Failed to move .part file: ${err.message}`,
+            });
+            return;
+          }
+
+          this.emit('file_saved', {
+            fileName: safeName,
+            filePath: savePath,
+            size: receivedBytes,
+            sha256: actualSha256,
+            sender,
+          });
+        });
+      });
+    });
+
+    req.on('error', (err) => {
+      try { fs.unlinkSync(partPath); } catch {}
+      this.emit('file_error', {
+        fileName: safeName,
+        error: `Direct connection error: ${err.message}`,
+      });
+    });
+
+    req.end();
   }
 
   async sendFile(filePath, targetPeerId = null) {
@@ -443,70 +595,71 @@ export class UltronClient extends EventEmitter {
     const stat = fs.statSync(filePath);
     const fileName = path.basename(filePath);
     const fileSize = stat.size;
-    const transferToken = `TOK${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const fileId = `file-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
+    const transferToken = `TOK${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-    // Read full file and compute SHA-256
-    const fileBuffer = fs.readFileSync(filePath);
-    const fileSha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-    const totalChunks = Math.max(1, Math.ceil(fileSize / CHUNK_SIZE_BYTES));
-
-    // Send FILE_START
-    await this._callRegistry('signal', {
-      type: 'file_start',
-      roomCode: this.roomCode,
-      peerId: this.peerId,
-      targetPeerId,
-      data: {
-        file: {
-          id: fileId,
-          transferToken,
-          name: fileName,
-          size: fileSize,
-          totalChunks,
-          sha256: fileSha256,
-          uploaderId: this.peerId,
-        },
-      },
+    // Stream SHA-256 hash
+    const fileSha256 = await new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
     });
 
-    // Stream chunks
-    for (let idx = 0; idx < totalChunks; idx += 1) {
-      const start = idx * CHUNK_SIZE_BYTES;
-      const end = Math.min(start + CHUNK_SIZE_BYTES, fileBuffer.length);
-      const chunkBuf = fileBuffer.subarray(start, end);
-      const payload = chunkBuf.toString('base64');
+    const localIps = getLocalIpAddresses();
+    const server = http.createServer((req, res) => {
+      if (req.url === `/download/${transferToken}`) {
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': fileSize,
+          'Content-Disposition': `attachment; filename="${fileName}"`,
+          'X-SHA256': fileSha256,
+          'Access-Control-Allow-Origin': '*',
+        });
 
-      await this._callRegistry('signal', {
-        type: 'file_chunk',
-        roomCode: this.roomCode,
-        peerId: this.peerId,
-        targetPeerId,
-        data: {
-          transferToken,
-          fileId,
-          index: idx,
-          payload,
-        },
-      });
+        const fileStream = fs.createReadStream(filePath);
+        let sentBytes = 0;
+        fileStream.on('data', (chunk) => {
+          sentBytes += chunk.length;
+          this.emit('send_progress', {
+            fileName,
+            sentBytes,
+            totalBytes: fileSize,
+            percent: Math.min(100, Math.round((sentBytes / fileSize) * 100)),
+          });
+        });
+        fileStream.pipe(res);
+        fileStream.on('end', () => {
+          setTimeout(() => {
+            try { server.close(); } catch {}
+          }, 3000);
+        });
+      } else {
+        res.writeHead(404).end();
+      }
+    });
 
-      this.emit('send_progress', {
-        fileName,
-        chunkIndex: idx + 1,
-        totalChunks,
-        percent: Math.round(((idx + 1) / totalChunks) * 100),
-      });
-    }
+    await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
+    const port = server.address().port;
 
-    // Send FILE_END
+    // Send direct P2P offer via signaling chat
     await this._callRegistry('signal', {
-      type: 'file_end',
+      type: 'chat',
       roomCode: this.roomCode,
       peerId: this.peerId,
       targetPeerId,
       data: {
-        transferToken,
-        fileId,
+        text: `[Direct P2P File] ${fileName} (${UltronClient.formatBytes(fileSize)})\nSHA-256: ${fileSha256}\nDirect Stream: http://${localIps[0]}:${port}/download/${transferToken}`,
+        senderName: this.peerName,
+        fileOffer: {
+          transferToken,
+          fileName,
+          fileSize,
+          sha256: fileSha256,
+          port,
+          ips: localIps,
+          url: `http://${localIps[0]}:${port}/download/${transferToken}`,
+        },
       },
     });
 
@@ -514,7 +667,8 @@ export class UltronClient extends EventEmitter {
       fileName,
       fileSize,
       sha256: fileSha256,
-      totalChunks,
+      port,
+      transferToken,
     };
   }
 
@@ -590,9 +744,25 @@ async function runInteractiveCli(client) {
     process.stdout.write(`\n💬 [${senderName}]: ${text}\nultron> `);
   });
 
+  client.on('file_confirm', ({ sender, fileName, fileSize, accept }) => {
+    rl.question(
+      `\n[Ultron] 📥 Incoming direct P2P file '${fileName}' (${UltronClient.formatBytes(fileSize)}) from ${sender}. Accept? (y/N): `,
+      (answer) => {
+        if (answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes') {
+          console.log(`[Ultron] 📥 Starting direct P2P download for '${fileName}'...`);
+          accept();
+        } else {
+          console.log(`[Ultron] ⛔ Transfer rejected.`);
+          rl.prompt();
+        }
+      }
+    );
+  });
+
   client.on('file_start', ({ fileName, fileSize, totalChunks, sender }) => {
+    const chunkInfo = totalChunks ? ` in ${totalChunks} chunks` : '';
     process.stdout.write(
-      `\n[Ultron] 📥 Incoming file '${fileName}' (${UltronClient.formatBytes(fileSize)}) in ${totalChunks} chunks from ${sender}...\n`
+      `\n[Ultron] 📥 Direct transfer for '${fileName}' (${UltronClient.formatBytes(fileSize)})${chunkInfo} from ${sender}...\n`
     );
   });
 
@@ -701,6 +871,7 @@ async function runInteractiveCli(client) {
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0]?.toLowerCase();
+  const autoAccept = args.includes('-y') || args.includes('--yes') || args.includes('--auto-accept');
 
   function getArg(flag, defaultValue = null) {
     const idx = args.indexOf(flag);
@@ -721,6 +892,7 @@ Usage:
   ultron reset                       Remove local ultron.json configuration
 
 Options:
+  --auto-accept, -y              Automatically accept incoming file transfers
   --key <secret>                 Optional room authorization key / password
   --server <url>                 Signaling server URL (default: https://ultronchat.vercel.app)
   --dir <path>                   Directory to save received files (default: ./ultron)
@@ -801,6 +973,7 @@ Options:
       serverUrl,
       saveDir: existing?.config?.saveDir || DEFAULT_SAVE_DIR,
       peerName: `Sender-${Date.now() % 10000}`,
+      autoAccept,
     });
 
     try {
@@ -860,6 +1033,7 @@ Options:
       serverUrl,
       saveDir,
       peerName,
+      autoAccept,
     });
 
     try {
@@ -908,6 +1082,7 @@ Options:
       serverUrl,
       saveDir,
       peerName,
+      autoAccept,
     });
 
     try {
@@ -960,6 +1135,7 @@ Options:
         serverUrl: cfg.serverUrl || DEFAULT_SERVER,
         saveDir: cfg.saveDir || DEFAULT_SAVE_DIR,
         peerName: cfg.peerName,
+        autoAccept,
       });
 
       try {
@@ -1036,6 +1212,7 @@ Options:
     peerName,
     serverUrl,
     saveDir,
+    autoAccept,
   });
 
   try {

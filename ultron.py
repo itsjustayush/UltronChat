@@ -34,6 +34,8 @@ import threading
 import subprocess
 import secrets
 import re
+import socket
+import http.server
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -348,17 +350,32 @@ class UltronClient:
             file_info = data.get("file", {})
             token = file_info.get("transferToken") or file_info.get("id")
             total_chunks = int(file_info.get("totalChunks", 0))
-            file_name = os.path.basename(file_info.get("name", "downloaded_file"))
+            raw_file_name = file_info.get("name", "downloaded_file")
+            file_name = os.path.basename(raw_file_name)
             file_size = int(file_info.get("size", 0))
             expected_sha256 = file_info.get("sha256", "")
+
+            save_path = os.path.join(self.save_dir, file_name)
+            base, ext = os.path.splitext(file_name)
+            counter = 1
+            while os.path.exists(save_path):
+                save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
+                counter += 1
+
+            part_path = f"{save_path}.part-{int(time.time() * 1000)}"
+            part_file = open(part_path, "wb")
+            hasher = hashlib.sha256()
 
             with self.lock:
                 self.incoming_transfers[token] = {
                     "name": file_name,
+                    "save_path": save_path,
+                    "part_path": part_path,
+                    "part_file": part_file,
+                    "hasher": hasher,
                     "size": file_size,
                     "totalChunks": total_chunks,
                     "expectedSha256": expected_sha256,
-                    "chunks": [None] * total_chunks,
                     "receivedChunks": 0,
                     "receivedBytes": 0,
                     "sender": sender,
@@ -378,16 +395,16 @@ class UltronClient:
                 transfer = self.incoming_transfers.get(token)
                 if not transfer or index >= transfer["totalChunks"]:
                     return
-                if transfer["chunks"][index] is None:
-                    raw_chunk = base64.b64decode(payload_b64)
-                    transfer["chunks"][index] = raw_chunk
-                    transfer["receivedChunks"] += 1
-                    transfer["receivedBytes"] += len(raw_chunk)
+                raw_chunk = base64.b64decode(payload_b64)
+                transfer["part_file"].write(raw_chunk)
+                transfer["hasher"].update(raw_chunk)
+                transfer["receivedChunks"] += 1
+                transfer["receivedBytes"] += len(raw_chunk)
 
-                    # Print progress
-                    pct = int((transfer["receivedChunks"] / transfer["totalChunks"]) * 100)
-                    sys.stdout.write(f"\r[Ultron] 📥 Receiving '{transfer['name']}': {pct}% ({self._format_bytes(transfer['receivedBytes'])} / {self._format_bytes(transfer['size'])})")
-                    sys.stdout.flush()
+                # Print progress
+                pct = int((transfer["receivedChunks"] / transfer["totalChunks"]) * 100) if transfer["totalChunks"] else 100
+                sys.stdout.write(f"\r[Ultron] 📥 Receiving '{transfer['name']}': {pct}% ({self._format_bytes(transfer['receivedBytes'])} / {self._format_bytes(transfer['size'])})")
+                sys.stdout.flush()
 
         elif event_type == "file_end":
             token = data.get("transferToken") or data.get("fileId")
@@ -397,119 +414,112 @@ class UltronClient:
             if not transfer:
                 return
 
+            transfer["part_file"].close()
+
             # Verify complete
-            if transfer["receivedChunks"] != transfer["totalChunks"] or any(c is None for c in transfer["chunks"]):
+            if transfer["receivedChunks"] != transfer["totalChunks"]:
+                try:
+                    os.remove(transfer["part_path"])
+                except Exception:
+                    pass
                 print(f"\n[Ultron] ❌ File transfer for '{transfer['name']}' ended incomplete.")
                 return
 
-            # Reassemble
-            file_bytes = b"".join(transfer["chunks"])
-            actual_sha256 = hashlib.sha256(file_bytes).hexdigest()
+            actual_sha256 = transfer["hasher"].hexdigest()
             expected_sha256 = transfer.get("expectedSha256", "")
 
             if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
+                try:
+                    os.remove(transfer["part_path"])
+                except Exception:
+                    pass
                 print(f"\n[Ultron] ❌ Checksum mismatch for '{transfer['name']}'! File discarded.")
                 return
 
-            # Save automatically into ./ultron folder
-            save_path = os.path.join(self.save_dir, transfer["name"])
-            base, ext = os.path.splitext(transfer["name"])
-            counter = 1
-            while os.path.exists(save_path):
-                save_path = os.path.join(self.save_dir, f"{base}_{counter}{ext}")
-                counter += 1
-
-            with open(save_path, "wb") as f:
-                f.write(file_bytes)
+            # Atomic move
+            try:
+                os.replace(transfer["part_path"], transfer["save_path"])
+            except Exception as e:
+                print(f"\n[Ultron] ❌ Failed to move .part file: {e}")
+                return
 
             print(f"\n[Ultron] ✅ File saved successfully!")
-            print(f"       📂 Destination: {save_path}")
-            print(f"       📦 Size: {self._format_bytes(len(file_bytes))}")
+            print(f"       📂 Destination: {transfer['save_path']}")
+            print(f"       📦 Size: {self._format_bytes(transfer['receivedBytes'])}")
             print(f"       🔒 SHA-256: {actual_sha256}\n")
 
             if self.on_file_received:
-                self.on_file_received(transfer["name"], save_path, len(file_bytes))
+                self.on_file_received(transfer["name"], transfer["save_path"], transfer["receivedBytes"])
 
     def send_file(self, file_path: str, target_peer_id: str = None) -> bool:
-        """Stream a file to peer(s) in chunk packets."""
+        """Stream a file directly to peer(s) via ephemeral P2P HTTP transfer."""
         if not os.path.isfile(file_path):
             print(f"[Ultron] Error: File '{file_path}' does not exist.")
             return False
 
         file_size = os.path.getsize(file_path)
         file_name = os.path.basename(file_path)
-        transfer_token = f"TOK{os.urandom(3).hex().upper()}"
-        file_id = f"file-{int(time.time())}-{os.urandom(2).hex()}"
+        transfer_token = f"TOK{os.urandom(4).hex().upper()}"
 
-        print(f"[Ultron] 📤 Preparing to send '{file_name}' ({self._format_bytes(file_size)})...")
+        print(f"[Ultron] 📤 Preparing direct P2P stream for '{file_name}' ({self._format_bytes(file_size)})...")
 
-        # Read and compute SHA-256
+        # Read and compute SHA-256 via streaming
         hasher = hashlib.sha256()
-        total_chunks = (file_size + CHUNK_SIZE_BYTES - 1) // CHUNK_SIZE_BYTES if file_size > 0 else 1
-
         with open(file_path, "rb") as f:
             while chunk := f.read(64 * 1024):
                 hasher.update(chunk)
         file_sha256 = hasher.hexdigest()
 
-        # Send FILE_START
-        start_payload = {
-            "type": "file_start",
-            "roomCode": self.room_code,
-            "peerId": self.peer_id,
-            "targetPeerId": target_peer_id,
-            "data": {
-                "file": {
-                    "id": file_id,
-                    "transferToken": transfer_token,
-                    "name": file_name,
-                    "size": file_size,
-                    "totalChunks": total_chunks,
-                    "sha256": file_sha256,
-                    "uploaderId": self.peer_id,
-                }
-            },
-        }
-        self._call_registry("signal", start_payload)
+        # Ephemeral direct HTTP transfer server
+        class DirectFileHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == f"/download/{transfer_token}":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(file_size))
+                    self.send_header("Content-Disposition", f'attachment; filename="{file_name}"')
+                    self.send_header("X-SHA256", file_sha256)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    sent_bytes = 0
+                    with open(file_path, "rb") as f:
+                        while chunk := f.read(64 * 1024):
+                            self.wfile.write(chunk)
+                            sent_bytes += len(chunk)
+                            pct = int((sent_bytes / file_size) * 100) if file_size else 100
+                            sys.stdout.write(f"\r[Ultron] 📤 Sending: {pct}%")
+                            sys.stdout.flush()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
 
-        # Stream Chunks
-        with open(file_path, "rb") as f:
-            for idx in range(total_chunks):
-                raw_chunk = f.read(CHUNK_SIZE_BYTES)
-                b64_payload = base64.b64encode(raw_chunk).decode("ascii")
+            def log_message(self, format, *args):
+                pass
 
-                chunk_payload = {
-                    "type": "file_chunk",
-                    "roomCode": self.room_code,
-                    "peerId": self.peer_id,
-                    "targetPeerId": target_peer_id,
-                    "data": {
-                        "transferToken": transfer_token,
-                        "fileId": file_id,
-                        "index": idx,
-                        "payload": b64_payload,
-                    },
-                }
-                self._call_registry("signal", chunk_payload)
+        httpd = http.server.HTTPServer(("0.0.0.0", 0), DirectFileHandler)
+        port = httpd.server_port
+        server_thread = threading.Thread(target=httpd.handle_request, daemon=True)
+        server_thread.start()
 
-                pct = int(((idx + 1) / total_chunks) * 100)
-                sys.stdout.write(f"\r[Ultron] 📤 Sending: {pct}% (Chunk {idx+1}/{total_chunks})")
-                sys.stdout.flush()
+        local_ip = "127.0.0.1"
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            pass
 
-        # Send FILE_END
-        end_payload = {
-            "type": "file_end",
-            "roomCode": self.room_code,
-            "peerId": self.peer_id,
-            "targetPeerId": target_peer_id,
-            "data": {
-                "transferToken": transfer_token,
-                "fileId": file_id,
-            },
-        }
-        self._call_registry("signal", end_payload)
+        direct_url = f"http://{local_ip}:{port}/download/{transfer_token}"
 
-        print(f"\n[Ultron] ✅ Transfer of '{file_name}' complete! (SHA-256: {file_sha256[:12]}...)")
+        # Send direct P2P offer via signaling
+        self.send_chat(
+            f"[Direct P2P File] {file_name} ({self._format_bytes(file_size)})\nSHA-256: {file_sha256}\nDirect Stream: {direct_url}",
+            target_peer_id=target_peer_id,
+        )
+
+        print(f"\n[Ultron] 📡 Direct stream listening on {direct_url}")
+        print(f"[Ultron] ✅ File offer broadcast to room peers! (SHA-256: {file_sha256[:12]}...)")
         return True
 
     def send_chat(self, text: str, target_peer_id: str = None):

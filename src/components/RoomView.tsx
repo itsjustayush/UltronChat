@@ -4,6 +4,7 @@ import { RoomState, BundleItem, TransferProgress, SystemLogEntry, Peer, ChatMess
 import { useSignaling } from '../hooks/useSignaling';
 import {
   calculateSHA256,
+  calculateBlobSHA256,
   formatBytes,
   calculateCarbonMetrics,
   getFileTypeLabel,
@@ -287,21 +288,15 @@ export const RoomView: React.FC<RoomViewProps> = ({
         });
 
         // Broadcast reaction via WebRTC DataChannel
-        if (peerEngineRef.current?.dataChannel?.readyState === 'open') {
-          try {
-            peerEngineRef.current.dataChannel.send(
-              JSON.stringify({
-                type: 'REACTION',
-                messageId,
-                emoji,
-                peerId: localPeerId,
-                updatedPeers: newPeers,
-              })
-            );
-          } catch (e) {
-            // ignore
-          }
-        }
+        broadcastOverDataChannels(
+          JSON.stringify({
+            type: 'REACTION',
+            messageId,
+            emoji,
+            peerId: localPeerId,
+            updatedPeers: newPeers,
+          })
+        );
 
         return { ...msg, reactions };
       })
@@ -347,7 +342,34 @@ export const RoomView: React.FC<RoomViewProps> = ({
   useEffect(() => {
     isRoomHostRef.current = isRoomHost;
   }, [isRoomHost]);
-  const peerEngineRef = useRef<WebRTCPeerEngine | null>(null);
+  const peerEnginesRef = useRef<Map<string, WebRTCPeerEngine>>(new Map());
+  const sendOfferRef = useRef<((target: string, offer: RTCSessionDescriptionInit) => void) | null>(null);
+  const sendAnswerRef = useRef<((target: string, answer: RTCSessionDescriptionInit) => void) | null>(null);
+  const sendCandidateRef = useRef<((target: string, cand: RTCIceCandidateInit) => void) | null>(null);
+
+  const broadcastOverDataChannels = useCallback((payload: string | ArrayBuffer) => {
+    let sentCount = 0;
+    for (const [peerId, engine] of peerEnginesRef.current.entries()) {
+      if (engine.dataChannel && engine.dataChannel.readyState === 'open') {
+        try {
+          engine.dataChannel.send(payload as any);
+          sentCount++;
+        } catch (err) {
+          console.warn(`[WebRTC] Failed to send on DataChannel to ${peerId}:`, err);
+        }
+      }
+    }
+    return sentCount;
+  }, []);
+
+  const hasOpenDataChannel = useCallback(() => {
+    for (const engine of peerEnginesRef.current.values()) {
+      if (engine.dataChannel && engine.dataChannel.readyState === 'open') {
+        return true;
+      }
+    }
+    return false;
+  }, []);
   const announcedJoinedPeersRef = useRef<Set<string>>(new Set());
 
   const bundleItemsRef = useRef<BundleItem[]>(room.bundleItems);
@@ -464,8 +486,8 @@ export const RoomView: React.FC<RoomViewProps> = ({
     }
 
     const rawBlob = new Blob(incoming.chunks.map((chunk) => typeof chunk === 'string' ? base64ToBytes(chunk) : chunk as Uint8Array), { type: incoming.type });
-    const actualHash = await calculateSHA256(await rawBlob.arrayBuffer());
-    if (incoming.sha256 && actualHash !== incoming.sha256) {
+    const actualHash = await calculateBlobSHA256(rawBlob);
+    if (incoming.sha256 && actualHash.toLowerCase() !== incoming.sha256.toLowerCase()) {
       delete incomingTransfersRef.current[tokenOrId];
       setTransfer(null);
       addErrorToast('ERR_FILE_HASH', 'The received file failed integrity verification and was discarded.');
@@ -511,6 +533,109 @@ export const RoomView: React.FC<RoomViewProps> = ({
     delete incomingTransfersRef.current[tokenOrId];
     setTransfer(null);
   };
+
+  const getOrCreatePeerEngine = useCallback((remotePeerId: string) => {
+    let engine = peerEnginesRef.current.get(remotePeerId);
+    if (engine) return engine;
+
+    const isPolite = !isRoomHostRef.current;
+    engine = new WebRTCPeerEngine(room.id, localPeerId, remotePeerId, isPolite);
+
+    engine.onStateChange = (state) => {
+      let anyConnected = false;
+      for (const e of peerEnginesRef.current.values()) {
+        if (e.getConnectionState() === 'connected') {
+          anyConnected = true;
+          break;
+        }
+      }
+      setWebrtcState(anyConnected ? 'connected' : state);
+
+      setPeersList((prev) =>
+        prev.map((p) =>
+          p.id === remotePeerId
+            ? { ...p, status: state === 'connected' ? 'ONLINE' : 'IDLE', latencyMs: 0, ip: 'P2P_DIRECT' }
+            : p
+        )
+      );
+    };
+
+    engine.onDataReceived = async (data) => {
+      const binaryChunk = data instanceof ArrayBuffer ? decodeBinaryFileChunk(data) : null;
+      if (binaryChunk) {
+        const incoming = incomingTransfersRef.current[binaryChunk.token];
+        if (!incoming || incoming.transferToken !== binaryChunk.token || Date.now() - incoming.startedAt > 10 * 60 * 1000) {
+          return;
+        }
+        const index = binaryChunk.index;
+        if (index < 0 || index >= incoming.totalChunks || incoming.chunks[index]) return;
+        incoming.chunks[index] = binaryChunk.payload;
+        incoming.receivedBytes += binaryChunk.payload.byteLength;
+        setTransfer((current) => current ? {
+          ...current,
+          transferredBytes: incoming.receivedBytes,
+          progressPercent: Math.min(100, Math.round((incoming.receivedBytes / incoming.size) * 100)),
+          encryptedChunksCount: incoming.chunks.filter(Boolean).length,
+        } : current);
+        return;
+      }
+      if (typeof data !== 'string') return;
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.type === 'CHAT_MESSAGE' && parsed.data) {
+          const chatMsg = parsed.data as ChatMessage;
+          setChatMessages((prev) => {
+            if (prev.some((m) => m.id === chatMsg.id)) return prev;
+            return [...prev, { ...chatMsg, status: 'read' }];
+          });
+
+          if (chatMsg.senderId !== localPeerId) {
+            const targetEngine = peerEnginesRef.current.get(chatMsg.senderId);
+            if (targetEngine?.dataChannel?.readyState === 'open') {
+              try {
+                targetEngine.dataChannel.send(
+                  JSON.stringify({ type: 'CHAT_ACK', messageId: chatMsg.id, status: 'read' })
+                );
+              } catch {}
+            }
+          }
+        } else if (parsed.type === 'TYPING_STATUS') {
+          const { peerId, isTyping, senderName } = parsed;
+          if (peerId && peerId !== localPeerId) handleRemoteTypingStatus(peerId, Boolean(isTyping), senderName);
+        } else if (parsed.type === 'REACTION' && parsed.messageId && parsed.emoji) {
+          applyReactionUpdate(parsed.messageId, parsed.emoji, parsed.updatedPeers || []);
+        } else if (parsed.type === 'CHAT_ACK' && parsed.messageId) {
+          setChatMessages((prev) => prev.map((m) => (
+            m.id === parsed.messageId ? { ...m, status: parsed.status || 'read' } : m
+          )));
+        } else if (parsed.type === 'FILE_START' && parsed.file) {
+          handleIncomingFileStart(parsed.file);
+        } else if (parsed.type === 'FILE_CHUNK') {
+          handleIncomingFileChunk(parsed.transferToken || parsed.fileId, Number(parsed.index), parsed.payload);
+        } else if (parsed.type === 'FILE_END') {
+          handleIncomingFileEnd(parsed.transferToken || parsed.fileId);
+        } else if (parsed.type === 'BUNDLE_ITEM_SHARE' && parsed.item) {
+          const dataItem = parsed.item;
+          if (!bundleItemsRef.current.some((i) => i.id === dataItem.id)) {
+            const rawBlob = dataItem.dataUrl ? dataUrlToBlob(dataItem.dataUrl) : undefined;
+            const blobUrl = rawBlob ? URL.createObjectURL(rawBlob) : undefined;
+            onAddBundleItem({ ...dataItem, rawBlob, blobUrl, encryptionStatus: 'WEBRTC-DTLS VERIFIED' });
+          }
+        }
+      } catch (e) {
+        console.error('[WebRTC] DataChannel receive parse error:', e);
+      }
+    };
+
+    engine.onSignalOutput = (signal) => {
+      if (signal.type === 'candidate' && signal.data && remotePeerId) {
+        sendCandidateRef.current?.(remotePeerId, signal.data);
+      }
+    };
+
+    peerEnginesRef.current.set(remotePeerId, engine);
+    return engine;
+  }, [room.id, localPeerId, onAddBundleItem, handleRemoteTypingStatus, applyReactionUpdate, handleIncomingFileStart, handleIncomingFileChunk, handleIncomingFileEnd]);
 
   const { sendSignal, sendOffer, sendAnswer, sendCandidate } = useSignaling({
     signalingUrl: 'registry',
@@ -558,19 +683,25 @@ export const RoomView: React.FC<RoomViewProps> = ({
               name: `Peer-${joinedId.substring(0, 4).toUpperCase()}`,
               isYou: false,
               status: 'ONLINE',
-              latencyMs: 12,
+              latencyMs: 0,
               ip: 'P2P_DIRECT',
             },
           ];
         });
 
-        if (isRoomHostRef.current && peerEngineRef.current) {
-          peerEngineRef.current.createOffer().then((offer) => {
+        if (isRoomHostRef.current) {
+          const engine = getOrCreatePeerEngine(joinedId);
+          engine.createOffer().then((offer) => {
             if (offer) sendOffer(joinedId, offer);
           });
         }
       } else if (data.event === 'peer_left') {
         announcedJoinedPeersRef.current.delete(data.peerId);
+        const engine = peerEnginesRef.current.get(data.peerId);
+        if (engine) {
+          engine.close();
+          peerEnginesRef.current.delete(data.peerId);
+        }
         setPeersList((prev) => prev.filter((p) => p.id !== data.peerId));
         setChatMessages((prev) => [
           ...prev,
@@ -591,7 +722,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
           name: `Peer-${id.substring(0, 4).toUpperCase()}`,
           isYou: false,
           status: 'ONLINE',
-          latencyMs: 12,
+          latencyMs: 0,
           ip: 'P2P_DIRECT',
         }));
         setPeersList([
@@ -599,9 +730,10 @@ export const RoomView: React.FC<RoomViewProps> = ({
           ...remotePeers,
         ]);
 
-        if (isRoomHostRef.current && peerEngineRef.current) {
+        if (isRoomHostRef.current) {
           for (const remoteId of remoteIds) {
-            peerEngineRef.current.createOffer().then((offer) => {
+            const engine = getOrCreatePeerEngine(remoteId);
+            engine.createOffer().then((offer) => {
               if (offer) sendOffer(remoteId, offer);
             });
           }
@@ -609,8 +741,6 @@ export const RoomView: React.FC<RoomViewProps> = ({
       }
     },
     onSignal: async (msg) => {
-      const peerEngine = peerEngineRef.current;
-
       if (msg.type === 'reaction' && msg.data) {
         const { messageId, emoji, updatedPeers } = msg.data;
         if (messageId && emoji && Array.isArray(updatedPeers)) {
@@ -645,7 +775,6 @@ export const RoomView: React.FC<RoomViewProps> = ({
           return [...prev, chatMsg];
         });
 
-        // Automatically send ACK back if message came from another peer
         if (chatMsg.senderId !== localPeerId) {
           sendSignal({
             type: 'chat_ack',
@@ -668,33 +797,16 @@ export const RoomView: React.FC<RoomViewProps> = ({
         return;
       }
 
-      // Handle signal-relayed file chunks (from CLI or when WebRTC dataChannel is unavailable)
-      if (msg.type === 'file_start' && msg.data?.file) {
-        handleIncomingFileStart(msg.data.file);
-        return;
-      }
-      if (msg.type === 'file_chunk' && msg.data) {
-        handleIncomingFileChunk(
-          msg.data.transferToken || msg.data.fileId,
-          Number(msg.data.index),
-          msg.data.payload
-        );
-        return;
-      }
-      if (msg.type === 'file_end' && msg.data) {
-        handleIncomingFileEnd(msg.data.transferToken || msg.data.fileId);
-        return;
-      }
-
-      if (!peerEngine) return;
-
-      if (msg.type === 'offer' && msg.data) {
-        const answer = await peerEngine.handleOffer(msg.data);
-        if (answer && msg.peerId) sendAnswer(msg.peerId, answer);
-      } else if (msg.type === 'answer' && msg.data) {
-        await peerEngine.handleAnswer(msg.data);
-      } else if (msg.type === 'candidate' && msg.data) {
-        await peerEngine.addIceCandidate(msg.data);
+      if (msg.type === 'offer' && msg.data && msg.peerId) {
+        const engine = getOrCreatePeerEngine(msg.peerId);
+        const answer = await engine.handleOffer(msg.data);
+        if (answer) sendAnswer(msg.peerId, answer);
+      } else if (msg.type === 'answer' && msg.data && msg.peerId) {
+        const engine = peerEnginesRef.current.get(msg.peerId);
+        if (engine) await engine.handleAnswer(msg.data);
+      } else if (msg.type === 'candidate' && msg.data && msg.peerId) {
+        const engine = getOrCreatePeerEngine(msg.peerId);
+        await engine.addIceCandidate(msg.data);
       }
     },
     onError: (err) => {
@@ -703,93 +815,19 @@ export const RoomView: React.FC<RoomViewProps> = ({
     },
   });
 
-  // Chat and file payloads intentionally stay off Firestore. The server only relays
-  // transient signaling; room content is kept in this tab or sent over WebRTC.
+  sendOfferRef.current = sendOffer;
+  sendAnswerRef.current = sendAnswer;
+  sendCandidateRef.current = sendCandidate;
 
-  // WebRTC DataChannel initialization
+  // WebRTC multi-peer cleanup on component unmount
   useEffect(() => {
-    const peerEngine = new WebRTCPeerEngine(room.id, localPeerId);
-    peerEngineRef.current = peerEngine;
-
-    peerEngine.onStateChange = (state) => {
-      setWebrtcState(state);
-    };
-
-    peerEngine.onDataReceived = async (data) => {
-      const binaryChunk = data instanceof ArrayBuffer ? decodeBinaryFileChunk(data) : null;
-      if (binaryChunk) {
-        const incoming = incomingTransfersRef.current[binaryChunk.token];
-        if (!incoming || incoming.transferToken !== binaryChunk.token || Date.now() - incoming.startedAt > 10 * 60 * 1000) {
-          return;
-        }
-        const index = binaryChunk.index;
-        if (index < 0 || index >= incoming.totalChunks || incoming.chunks[index]) return;
-        incoming.chunks[index] = binaryChunk.payload;
-        incoming.receivedBytes += binaryChunk.payload.byteLength;
-        setTransfer((current) => current ? {
-          ...current,
-          transferredBytes: incoming.receivedBytes,
-          progressPercent: Math.min(100, Math.round((incoming.receivedBytes / incoming.size) * 100)),
-          encryptedChunksCount: incoming.chunks.filter(Boolean).length,
-        } : current);
-        return;
-      }
-      if (typeof data !== 'string') return;
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed.type === 'CHAT_MESSAGE' && parsed.data) {
-          const chatMsg = parsed.data as ChatMessage;
-          setChatMessages((prev) => {
-            if (prev.some((m) => m.id === chatMsg.id)) return prev;
-            return [...prev, { ...chatMsg, status: 'read' }];
-          });
-
-          if (chatMsg.senderId !== localPeerId && peerEngineRef.current?.dataChannel?.readyState === 'open') {
-            peerEngineRef.current.dataChannel.send(
-              JSON.stringify({ type: 'CHAT_ACK', messageId: chatMsg.id, status: 'read' })
-            );
-          }
-        } else if (parsed.type === 'TYPING_STATUS') {
-          const { peerId, isTyping, senderName } = parsed;
-          if (peerId && peerId !== localPeerId) handleRemoteTypingStatus(peerId, Boolean(isTyping), senderName);
-        } else if (parsed.type === 'REACTION' && parsed.messageId && parsed.emoji) {
-          applyReactionUpdate(parsed.messageId, parsed.emoji, parsed.updatedPeers || []);
-        } else if (parsed.type === 'CHAT_ACK' && parsed.messageId) {
-          setChatMessages((prev) => prev.map((m) => (
-            m.id === parsed.messageId ? { ...m, status: parsed.status || 'read' } : m
-          )));
-        } else if (parsed.type === 'FILE_START' && parsed.file) {
-          handleIncomingFileStart(parsed.file);
-        } else if (parsed.type === 'FILE_CHUNK') {
-          handleIncomingFileChunk(parsed.transferToken || parsed.fileId, Number(parsed.index), parsed.payload);
-        } else if (parsed.type === 'FILE_END') {
-          handleIncomingFileEnd(parsed.transferToken || parsed.fileId);
-        } else if (parsed.type === 'BUNDLE_ITEM_SHARE' && parsed.item) {
-          // Backward-compatible path for older clients; new clients always chunk.
-          const dataItem = parsed.item;
-          if (!bundleItemsRef.current.some((i) => i.id === dataItem.id)) {
-            const rawBlob = dataItem.dataUrl ? dataUrlToBlob(dataItem.dataUrl) : undefined;
-            const blobUrl = rawBlob ? URL.createObjectURL(rawBlob) : undefined;
-            onAddBundleItem({ ...dataItem, rawBlob, blobUrl, encryptionStatus: 'WEBRTC DTLS TRANSPORT' });
-          }
-        }
-      } catch (e) {
-        console.error('[WebRTC] DataChannel receive parse error:', e);
-      }
-    };
-
-    peerEngine.onSignalOutput = (signal) => {
-      if (signal.type === 'candidate' && signal.data) {
-        const remoteTarget = peersListRef.current.find((p) => !p.isYou)?.id || '';
-        sendCandidate(remoteTarget, signal.data);
-      }
-    };
-
     return () => {
-      peerEngine.close();
-      peerEngineRef.current = null;
+      for (const engine of peerEnginesRef.current.values()) {
+        engine.close();
+      }
+      peerEnginesRef.current.clear();
     };
-  }, [room.id, localPeerId]);
+  }, []);
 
   // Broadcast local typing status
   const broadcastTypingStatus = (isTyping: boolean) => {
@@ -803,15 +841,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
       data: payload,
     });
 
-    if (peerEngineRef.current?.dataChannel?.readyState === 'open') {
-      try {
-        peerEngineRef.current.dataChannel.send(
-          JSON.stringify({ type: 'TYPING_STATUS', ...payload })
-        );
-      } catch (e) {
-        // ignore
-      }
-    }
+    broadcastOverDataChannels(
+      JSON.stringify({ type: 'TYPING_STATUS', ...payload })
+    );
   };
 
   const handleChatInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -893,15 +925,9 @@ export const RoomView: React.FC<RoomViewProps> = ({
     }, 180);
 
     // 2. Send via WebRTC DataChannel if open
-    if (peerEngineRef.current?.dataChannel?.readyState === 'open') {
-      try {
-        peerEngineRef.current.dataChannel.send(
-          JSON.stringify({ type: 'CHAT_MESSAGE', data: chatMsg })
-        );
-      } catch (e) {
-        console.warn('DataChannel error:', e);
-      }
-    }
+    broadcastOverDataChannels(
+      JSON.stringify({ type: 'CHAT_MESSAGE', data: chatMsg })
+    );
 
   };
 
@@ -933,7 +959,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
       addErrorToast('ERR_FILE_SIZE', `Files above ${formatBytes(MAX_FILE_SIZE)} are not supported in ephemeral browser memory.`);
       return;
     }
-    if (peersList.length < 2 || peerEngineRef.current?.dataChannel?.readyState !== 'open') {
+    if (peersList.length < 2 || !hasOpenDataChannel()) {
       addErrorToast('ERR_DIRECT_CHANNEL', 'Direct peer link is not ready. Connect to a peer before sharing files.');
       return;
     }
@@ -949,14 +975,7 @@ export const RoomView: React.FC<RoomViewProps> = ({
     try {
       const rawBlob = file;
       const blobUrl = URL.createObjectURL(file);
-      let sha256Hex = '';
-      if (file.size <= 32 * 1024 * 1024) {
-        const fileBuffer = await file.arrayBuffer();
-        sha256Hex = await calculateSHA256(fileBuffer);
-      } else {
-        const headerSlice = await file.slice(0, 1024 * 1024).arrayBuffer();
-        sha256Hex = await calculateSHA256(headerSlice);
-      }
+      const sha256Hex = await calculateBlobSHA256(file);
 
       const newItem: BundleItem = {
         id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -996,10 +1015,17 @@ export const RoomView: React.FC<RoomViewProps> = ({
         },
       };
 
-      const channel = peerEngineRef.current?.dataChannel;
-      const isChannelOpen = channel?.readyState === 'open';
+      const allEngines: WebRTCPeerEngine[] = Array.from(peerEnginesRef.current.values());
+      const openEngines = allEngines.filter((e) => e.dataChannel && e.dataChannel.readyState === 'open');
+
+      if (openEngines.length === 0) {
+        addErrorToast('ERR_DIRECT_CHANNEL', 'Direct peer link is not open. Connect to a peer before sharing files.');
+        return;
+      }
+
+      const openChannels = openEngines.map((e) => e.dataChannel!);
       const transferToken = createTransferToken();
-      const chunkSize = isChannelOpen ? RTC_DATA_CHANNEL_CHUNK_SIZE : 24 * 1024;
+      const chunkSize = RTC_DATA_CHANNEL_CHUNK_SIZE;
       const totalChunks = Math.ceil(fileSize / chunkSize);
 
       setTransfer({
@@ -1034,92 +1060,49 @@ export const RoomView: React.FC<RoomViewProps> = ({
         transferToken,
       };
 
-      if (isChannelOpen && channel) {
+      for (const channel of openChannels) {
         channel.bufferedAmountLowThreshold = RTC_DATA_CHANNEL_LOW_WATERMARK;
         await waitForDataChannelCapacity(channel);
         channel.send(JSON.stringify({
           type: 'FILE_START',
           file: fileStartPayload,
         }));
+      }
 
-        let index = 0;
-        while (index < totalChunks) {
+      let index = 0;
+      while (index < totalChunks) {
+        for (const channel of openChannels) {
           await waitForDataChannelCapacity(channel);
-          const burstSize = getAdaptiveBurstSize(channel);
-          const burstEnd = Math.min(totalChunks, index + burstSize);
-          let transferredBytes = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
-          for (; index < burstEnd; index += 1) {
-            const start = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
-            const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileSize);
-            const chunkBlob = file.slice(start, end);
-            const chunkBuffer = await chunkBlob.arrayBuffer();
-            channel.send(encodeBinaryFileChunk(
-              transferToken,
-              index,
-              new Uint8Array(chunkBuffer),
-            ));
-            transferredBytes = end;
-          }
-          setTransfer((current) => current ? {
-            ...current,
-            transferredBytes,
-            progressPercent: Math.round((transferredBytes / fileSize) * 100),
-            encryptedChunksCount: index,
-          } : current);
         }
-
-        await waitForDataChannelCapacity(channel);
-        channel.send(JSON.stringify({ type: 'FILE_END', fileId: newItem.id, transferToken, totalChunks }));
-      } else {
-        // Fallback: Send through encrypted signal relay (e.g. to CLI or when WebRTC dataChannel is unavailable)
-        sendSignal({
-          type: 'file_start',
-          roomId: room.id,
-          peerId: localPeerId,
-          data: { file: fileStartPayload },
-        });
-
-        for (let idx = 0; idx < totalChunks; idx += 1) {
-          const start = idx * chunkSize;
-          const end = Math.min(start + chunkSize, fileSize);
+        const burstSize = Math.min(...openChannels.map(getAdaptiveBurstSize));
+        const burstEnd = Math.min(totalChunks, index + burstSize);
+        let transferredBytes = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
+        for (; index < burstEnd; index += 1) {
+          const start = index * RTC_DATA_CHANNEL_CHUNK_SIZE;
+          const end = Math.min(start + RTC_DATA_CHANNEL_CHUNK_SIZE, fileSize);
           const chunkBlob = file.slice(start, end);
           const chunkBuffer = await chunkBlob.arrayBuffer();
-          const bytes = new Uint8Array(chunkBuffer);
-          let binaryStr = '';
-          for (let i = 0; i < bytes.length; i++) {
-            binaryStr += String.fromCharCode(bytes[i]);
-          }
-          const payload = btoa(binaryStr);
-
-          sendSignal({
-            type: 'file_chunk',
-            roomId: room.id,
-            peerId: localPeerId,
-            data: {
-              transferToken,
-              fileId: newItem.id,
-              index: idx,
-              payload,
-            },
-          });
-
-          setTransfer((current) => current ? {
-            ...current,
-            transferredBytes: end,
-            progressPercent: Math.round((end / fileSize) * 100),
-            encryptedChunksCount: idx + 1,
-          } : current);
-        }
-
-        sendSignal({
-          type: 'file_end',
-          roomId: room.id,
-          peerId: localPeerId,
-          data: {
+          const binaryPacket = encodeBinaryFileChunk(
             transferToken,
-            fileId: newItem.id,
-          },
-        });
+            index,
+            new Uint8Array(chunkBuffer),
+          );
+          for (const channel of openChannels) {
+            channel.send(binaryPacket);
+          }
+          transferredBytes = end;
+        }
+        setTransfer((current) => current ? {
+          ...current,
+          transferredBytes,
+          progressPercent: Math.round((transferredBytes / fileSize) * 100),
+          encryptedChunksCount: index,
+        } : current);
+      }
+
+      for (const channel of openChannels) {
+        await waitForDataChannelCapacity(channel);
+        channel.send(JSON.stringify({ type: 'FILE_END', fileId: newItem.id, transferToken, totalChunks }));
       }
 
       onAddBundleItem(newItem);

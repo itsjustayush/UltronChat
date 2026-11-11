@@ -30,6 +30,7 @@ export interface P2PSignalPayload {
   type: 'offer' | 'answer' | 'candidate' | 'quota_check';
   data: any;
   senderId?: string;
+  targetPeerId?: string;
 }
 
 /**
@@ -40,17 +41,22 @@ export class WebRTCPeerEngine {
   public dataChannel: RTCDataChannel | null = null;
   // Made public for real-time transfer access
   private candidateQueue: RTCIceCandidateInit[] = [];
-  private roomId: string;
-  private peerId: string;
+  public roomId: string;
+  public peerId: string;
+  public remotePeerId?: string;
+  public isPolite: boolean = false;
+  private makingOffer: boolean = false;
 
   public onStateChange?: (state: WebRTCConnectionState) => void;
   public onError?: (errorMsg: string, code: string) => void;
   public onDataReceived?: (data: ArrayBuffer | string) => void;
   public onSignalOutput?: (signal: P2PSignalPayload) => void;
 
-  constructor(roomId: string, peerId: string) {
+  constructor(roomId: string, peerId: string, remotePeerId?: string, isPolite: boolean = false) {
     this.roomId = roomId;
     this.peerId = peerId;
+    this.remotePeerId = remotePeerId;
+    this.isPolite = isPolite;
     this.initPeerConnection();
   }
 
@@ -66,6 +72,7 @@ export class WebRTCPeerEngine {
             type: 'candidate',
             data: event.candidate,
             senderId: this.peerId,
+            targetPeerId: this.remotePeerId,
           });
         }
       };
@@ -131,23 +138,50 @@ export class WebRTCPeerEngine {
     };
   }
 
-  // WebRTC Handshake Procedural Steps
+  // WebRTC Handshake Procedural Steps with Perfect Negotiation
   public async createOffer(): Promise<RTCSessionDescriptionInit | null> {
     if (!this.pc) return null;
-    this.createDataChannel();
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
-    return offer;
+    try {
+      this.makingOffer = true;
+      this.createDataChannel();
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      return offer;
+    } catch (err: any) {
+      console.warn('[P2PEngine] Failed to create offer:', err?.message || err);
+      return null;
+    } finally {
+      this.makingOffer = false;
+    }
   }
 
   public async handleOffer(offerData: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit | null> {
     if (!this.pc) return null;
-    if (this.pc.signalingState !== 'stable' && this.pc.signalingState !== 'have-remote-offer') {
-      console.warn(`[P2PEngine] Offer received in non-stable signaling state: ${this.pc.signalingState}`);
-      return null;
+    const offerCollision = this.makingOffer || this.pc.signalingState !== 'stable';
+    if (offerCollision) {
+      if (!this.isPolite) {
+        console.warn(`[P2PEngine] Offer collision; impolite peer ignoring remote offer`);
+        return null;
+      }
+      try {
+        await Promise.all([
+          this.pc.setLocalDescription({ type: 'rollback' }),
+          this.pc.setRemoteDescription(new RTCSessionDescription(offerData)),
+        ]);
+      } catch (err: any) {
+        console.warn('[P2PEngine] Rollback failed during offer collision:', err);
+        return null;
+      }
+    } else {
+      try {
+        await this.pc.setRemoteDescription(new RTCSessionDescription(offerData));
+      } catch (err: any) {
+        console.warn('[P2PEngine] Failed to set remote offer:', err?.message || err);
+        return null;
+      }
     }
+
     try {
-      await this.pc.setRemoteDescription(new RTCSessionDescription(offerData));
       while (this.candidateQueue.length > 0) {
         const candidate = this.candidateQueue.shift();
         if (candidate) {
@@ -158,7 +192,7 @@ export class WebRTCPeerEngine {
       await this.pc.setLocalDescription(answer);
       return answer;
     } catch (err: any) {
-      console.warn('[P2PEngine] Failed to handle offer:', err?.message || err);
+      console.warn('[P2PEngine] Failed to create answer:', err?.message || err);
       return null;
     }
   }
@@ -180,6 +214,11 @@ export class WebRTCPeerEngine {
     } catch (err: any) {
       console.warn('[P2PEngine] Failed to set remote answer:', err?.message || err);
     }
+  }
+
+  public getConnectionState(): WebRTCConnectionState {
+    if (!this.pc) return 'closed';
+    return (this.pc.iceConnectionState as WebRTCConnectionState) || 'new';
   }
 
   public async addIceCandidate(candidateData: RTCIceCandidateInit) {
@@ -291,14 +330,11 @@ export function createLogEntry(
 }
 
 /**
- * Initial system logs matching design specification
+ * Initial system logs reflecting genuine runtime state
  */
 export const INITIAL_SYSTEM_LOGS: SystemLogEntry[] = [
-  createLogEntry('PEER_CONNECTED', '127.0.0.1', 'info'),
-  createLogEntry('WEBRTC_STABLE', 'TRUE', 'success'),
-  createLogEntry('ENCRYPTION_ENGINE', 'AES-256-GCM', 'encryption'),
-  createLogEntry('LATENCY', '24MS', 'info'),
-  createLogEntry('BITRATE', '12.4 MB/S', 'success'),
-  createLogEntry('ICE_GATHERING', 'COMPLETED', 'info'),
+  createLogEntry('SYSTEM_INIT', 'READY', 'info'),
+  createLogEntry('CRYPTO_TRANSPORT', 'WEBRTC_DTLS_1.3', 'encryption'),
+  createLogEntry('SIGNALING_CHANNEL', 'ACTIVE', 'info'),
 ];
 

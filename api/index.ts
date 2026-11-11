@@ -4,10 +4,7 @@
  */
 
 import { neon } from '@neondatabase/serverless';
-import { createHash } from 'node:crypto';
-
-const DEFAULT_DATABASE_URL =
-  'postgresql://neondb_owner:npg_OWXEgl2ae7HC@ep-wandering-voice-bbgycfts-pooler.c-15.us-east-1.aws.neon.tech/neondb?sslmode=require';
+import { scryptSync } from 'node:crypto';
 
 const ROOM_TTL_SECONDS = 90;
 const EVENT_TTL_SECONDS = 30;
@@ -22,21 +19,20 @@ const ALLOWED_SIGNAL_TYPES = new Set([
   'chat_ack',
   'typing',
   'reaction',
-  'file_start',
-  'file_chunk',
-  'file_end',
 ]);
 const ALLOWED_ACTIONS = new Set(['create', 'join', 'heartbeat', 'leave', 'poll', 'signal', 'lookup']);
 
 function getSql() {
-  const rawUrl = process.env.NEON_DATABASE_URL || process.env.DATABASE_URL;
-  const dbUrl = rawUrl && !rawUrl.includes('supabase.co') ? rawUrl : DEFAULT_DATABASE_URL;
+  const dbUrl = process.env.DATABASE_URL || process.env.NEON_DATABASE_URL;
+  if (!dbUrl || dbUrl.includes('supabase.co')) {
+    throw new Error('DATABASE_URL or NEON_DATABASE_URL environment variable is required and must point to Neon PostgreSQL');
+  }
   return neon(dbUrl);
 }
 
 function hashAuthKey(key: unknown): string | null {
   if (typeof key !== 'string' || !key.trim()) return null;
-  return createHash('sha256').update(key.trim()).digest('hex');
+  return scryptSync(key.trim(), 'ultronchat_auth_salt_v1', 32).toString('hex');
 }
 
 export function normalizeRoomCode(value: unknown): string | null {
@@ -352,15 +348,23 @@ export async function executeNeonRoomAction(
       await touchRoom(sql, roomCode, peerId);
       const now = new Date().toISOString();
 
+      // Atomic consume: delete matching events and return them in a single query
       const events = (await sql`
-        SELECT id, sender_peer_id, message_type, payload, created_at
-        FROM ultronchat_room_events
-        WHERE room_code = ${roomCode}
-          AND target_peer_id = ${peerId}
-          AND id > ${sinceId}
-          AND expires_at > ${now}::timestamptz
-        ORDER BY id ASC
-        LIMIT 50
+        WITH consumed AS (
+          DELETE FROM ultronchat_room_events
+          WHERE id IN (
+            SELECT id
+            FROM ultronchat_room_events
+            WHERE room_code = ${roomCode}
+              AND target_peer_id = ${peerId}
+              AND id > ${sinceId}
+              AND expires_at > ${now}::timestamptz
+            ORDER BY id ASC
+            LIMIT 50
+          )
+          RETURNING id, sender_peer_id, message_type, payload, created_at
+        )
+        SELECT * FROM consumed ORDER BY id ASC
       `) as Array<{
         id: number | string;
         sender_peer_id: string;
@@ -368,15 +372,6 @@ export async function executeNeonRoomAction(
         payload: any;
         created_at: string;
       }>;
-
-      // Consume events so they cannot be delivered again
-      if (events.length > 0) {
-        const eventIds = events.map((e) => Number(e.id));
-        await sql`
-          DELETE FROM ultronchat_room_events
-          WHERE id = ANY(${eventIds})
-        `;
-      }
 
       return {
         messages: events.map((e) => ({

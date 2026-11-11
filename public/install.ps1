@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # UltronChat Windows PowerShell Installer
 # Run in PowerShell: irm https://ultronchat.vercel.app/install.ps1 | iex
 # ==============================================================================
@@ -19,15 +19,15 @@ $serverUrl = "https://ultronchat.vercel.app"
 
 # 1. Detect runtime: Node.js (preferred) or Python
 $runtime = $null
-$nodePath = (Get-Command node -ErrorAction SilentlyContinue)?.Source
-$pythonPath = (Get-Command python -ErrorAction SilentlyContinue)?.Source
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
 
-if ($nodePath) {
+if ($nodeCmd) {
     $runtime = "node"
     $downloadUrl = "$serverUrl/ultron.mjs"
     $scriptDest = Join-Path $installDir "ultron.mjs"
     Write-Host "✔ Detected Node.js ($(node -v))" -ForegroundColor Green
-} elseif ($pythonPath) {
+} elseif ($pythonCmd) {
     $runtime = "python"
     $downloadUrl = "$serverUrl/ultron.py"
     $scriptDest = Join-Path $installDir "ultron.py"
